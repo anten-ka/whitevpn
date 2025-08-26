@@ -58,6 +58,4 @@ sudo blockme
 
 ## Контакты
 Для вопросов, предложений или сообщений об ошибках свяжитесь с нами:
-- Email: [Ваш email]
-- Telegram: [Ваш Telegram]
-- GitHub Issues: [Ссылка на Issues репозитория]
+- Email: 1vpn1@rambler.ru
