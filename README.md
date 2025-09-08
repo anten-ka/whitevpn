@@ -32,6 +32,8 @@ BlockTraffic — это проект для блокировки доступа 
    sudo ./install_bot.sh
    ```
    Введите токен Telegram-бота и Telegram ID администратора, когда будет предложено.
+    - Получить токен API можно у [@BotFather](https://telegram.me/BotFather)
+    - Узнать свой Telegram ID можно у [@userinfobot](https://telegram.me/userinfobot)
 
 ## Использование
 ### Команда `blockme`
