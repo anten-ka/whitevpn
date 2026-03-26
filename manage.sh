@@ -20,17 +20,19 @@ log() {
   echo -e "\033[34m[INFO]\033[0m $1" | tee -a "$LOG_FILE"
 }
 success() {
-  echo -e "\033[32m[SUCCESS]\033[0m $1" | tee -a "$LOG_FILE"
+  echo -e "\033[32m[OK]\033[0m $1" | tee -a "$LOG_FILE"
 }
 error() {
-  echo -e "\033[31m[ERROR]\033[0m $1" | tee -a "$LOG_FILE"
+  echo -e "\033[31m[ОШИБКА]\033[0m $1" | tee -a "$LOG_FILE"
 }
 
+# ═══════════════════════════════════════════════════════════════════════
 # Управление Telegram-ботом
+# ═══════════════════════════════════════════════════════════════════════
+
 manage_bot() {
   log "Управление Telegram-ботом..."
 
-  # Проверка Python
   if ! command -v python3 &>/dev/null; then
     error "Python3 не установлен."
     return 1
@@ -39,7 +41,6 @@ manage_bot() {
   PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' | cut -d'.' -f1,2)
   VENV_PACKAGE="python${PYTHON_VERSION}-venv"
 
-  # Если бот уже установлен — предложить обновить
   if systemctl list-units --full -all | grep -Fq "block-ips-bot.service"; then
     log "Telegram-бот уже установлен."
     echo "Хотите обновить токен и ID администратора?"
@@ -61,13 +62,11 @@ EOF"
     return 0
   fi
 
-  # Установка бота
   log "Установка Telegram-бота..."
 
   sudo apt install -y -qq "$VENV_PACKAGE" >> "$LOG_FILE" 2>&1
   sudo mkdir -p "$TELEGRAM_BOT_DIR"
 
-  # Копирование bot.py
   if [ -f "$SYSTEM_INSTALL_DIR/bot.py" ]; then
     sudo cp "$SYSTEM_INSTALL_DIR/bot.py" "$TELEGRAM_BOT_DIR/bot.py"
   else
@@ -75,11 +74,9 @@ EOF"
     return 1
   fi
 
-  # Виртуальное окружение
   python3 -m venv "$TELEGRAM_BOT_DIR/venv" >> "$LOG_FILE" 2>&1
   "$TELEGRAM_BOT_DIR/venv/bin/pip" install -q aiogram==3.5.0 >> "$LOG_FILE" 2>&1
 
-  # Запрос токена и ID
   echo ""
   echo "Получите токен у @BotFather в Telegram"
   read -rp "  Введите токен бота: " BOT_TOKEN
@@ -92,7 +89,6 @@ EOF"
 EOF"
   sudo chmod 600 "$BOT_CONFIG_FILE"
 
-  # Systemd-сервис
   cat << EOF | sudo tee /etc/systemd/system/block-ips-bot.service > /dev/null
 [Unit]
 Description=WhiteVPN Telegram Bot
@@ -122,7 +118,10 @@ EOF
   fi
 }
 
+# ═══════════════════════════════════════════════════════════════════════
 # Деинсталляция
+# ═══════════════════════════════════════════════════════════════════════
+
 uninstall() {
   log "Остановка и отключение сервисов..."
   systemctl stop block-ips.service 2>/dev/null
@@ -167,54 +166,64 @@ uninstall() {
   success "Деинсталляция завершена."
 }
 
-# Отключение защиты
+# ═══════════════════════════════════════════════════════════════════════
+# Включение / Отключение защиты
+# ═══════════════════════════════════════════════════════════════════════
+
+enable_blocking() {
+  log "Включение защиты..."
+  echo ""
+
+  log "DNS → 127.0.0.1"
+  echo 'nameserver 127.0.0.1' | tee /etc/resolv.conf > /dev/null
+  success "DNS настроен"
+
+  log "Запуск Unbound..."
+  systemctl start unbound
+  success "Unbound запущен"
+
+  log "iptables правило OUTPUT..."
+  iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null || \
+    iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
+  success "iptables правило применено"
+
+  systemctl start block-ips.service 2>/dev/null
+  systemctl start block-domains.service 2>/dev/null
+
+  # Docker: автосканирование и показ статуса
+  if [ -f "$DOCKER_RULES" ] && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    # Включаем Docker-блокировку если контейнеры настроены
+    if [ -f /etc/block-ips/docker_containers.conf ]; then
+      bash "$DOCKER_RULES" enable 2>&1
+    fi
+    # Показываем краткий статус
+    bash "$DOCKER_RULES" brief-status 2>&1
+  fi
+
+  echo ""
+  success "Защита включена."
+}
+
 disable_blocking() {
-  log "Удаление правила iptables..."
+  log "Отключение защиты..."
+
   iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
-
-  log "Остановка unbound..."
   systemctl stop unbound
-
-  log "Остановка связанных сервисов..."
   systemctl stop block-ips.service 2>/dev/null
   systemctl stop block-domains.service 2>/dev/null
-
-  log "Изменение DNS на 8.8.8.8..."
   echo 'nameserver 8.8.8.8' | tee /etc/resolv.conf > /dev/null
 
-  # Docker-блокировка
   if [ -f "$DOCKER_RULES" ]; then
     bash "$DOCKER_RULES" disable 2>&1
   fi
 
-  success "Защита отключена"
+  success "Защита отключена."
 }
 
-# Включение защиты
-enable_blocking() {
-  log "Изменение DNS на 127.0.0.1..."
-  echo 'nameserver 127.0.0.1' | tee /etc/resolv.conf > /dev/null
-
-  log "Запуск unbound..."
-  systemctl start unbound
-
-  log "Проверка и установка iptables правила..."
-  iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null || \
-    iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
-
-  log "Запуск связанных сервисов..."
-  systemctl start block-ips.service
-  systemctl start block-domains.service
-
-  # Docker-блокировка
-  if [ -f "$DOCKER_RULES" ] && [ -f /etc/block-ips/docker_containers.conf ]; then
-    bash "$DOCKER_RULES" enable 2>&1
-  fi
-
-  success "Защита включена"
-}
-
+# ═══════════════════════════════════════════════════════════════════════
 # Docker-подменю
+# ═══════════════════════════════════════════════════════════════════════
+
 docker_menu() {
   if [ ! -f "$DOCKER_RULES" ] || ! command -v docker &>/dev/null; then
     error "Docker или docker_rules.sh не найден."
@@ -222,44 +231,66 @@ docker_menu() {
   fi
 
   while true; do
+    # Автосканирование при входе в меню
+    bash "$DOCKER_RULES" scan
+
     echo ""
-    echo -e "\033[36m══════ Docker-блокировка (AmneziaWG и др.) ══════\033[0m"
-    echo "1. Выбрать контейнеры для блокировки"
-    echo "2. Включить Docker-блокировку"
-    echo "3. Отключить Docker-блокировку"
-    echo "4. Статус Docker-блокировки"
-    echo "5. Переконфигурировать Unbound для Docker"
-    echo "6. Настроить DNS Docker-демона (для блокировки доменов)"
-    echo "7. Сбросить DNS Docker-демона (по умолчанию)"
-    echo "0. Назад в главное меню"
+    echo -e "\033[36m══════ Docker-контейнеры ════════════════════════════\033[0m"
+    echo "  1. Автонастройка защиты (рекомендуется)"
+    echo "  2. Выбрать контейнеры вручную"
+    echo "  3. Подробный статус"
+    echo "  4. Отключить Docker-блокировку"
+    echo "  5. Полная очистка Docker-настроек"
+    echo "  0. Назад"
     echo ""
     read -rp "  Выберите действие: " dc
 
     case $dc in
-      1) bash "$DOCKER_RULES" select ;;
-      2) bash "$DOCKER_RULES" enable ;;
-      3) bash "$DOCKER_RULES" disable ;;
-      4) bash "$DOCKER_RULES" status ;;
-      5) bash "$DOCKER_RULES" unbound-on ;;
-      6) bash "$DOCKER_RULES" dns-on ;;
-      7) bash "$DOCKER_RULES" dns-off ;;
+      1) bash "$DOCKER_RULES" auto-setup ;;
+      2)
+        bash "$DOCKER_RULES" select
+        if [ $? -eq 0 ]; then
+          read -rp "  Включить блокировку для выбранных контейнеров? (y/n): " apply
+          [[ "$apply" =~ ^[yYдД] ]] && bash "$DOCKER_RULES" enable
+        fi
+        ;;
+      3) bash "$DOCKER_RULES" status ;;
+      4) bash "$DOCKER_RULES" disable ;;
+      5)
+        echo ""
+        echo -e "\033[33m[!]\033[0m Будут удалены ВСЕ Docker-настройки блокировки:"
+        echo "    - iptables правила DOCKER-USER"
+        echo "    - Unbound access-control для Docker"
+        echo "    - DNS настройки Docker-демона"
+        echo "    - Конфигурация выбранных контейнеров"
+        echo ""
+        read -rp "  Вы уверены? (y/n): " confirm
+        [[ "$confirm" =~ ^[yYдД] ]] && bash "$DOCKER_RULES" cleanup
+        ;;
       0) break ;;
       *) error "Неверный выбор." ;;
     esac
   done
 }
 
+# ═══════════════════════════════════════════════════════════════════════
 # Главное меню
+# ═══════════════════════════════════════════════════════════════════════
+
 while true; do
-  echo -e "\n\033[1mМеню управления:\033[0m"
-  echo "0. Выход"
-  echo "1. Запустить обновление списка IP и доменов"
-  echo "2. Деинсталлировать проект"
-  echo "3. Отключить защиту"
-  echo "4. Включить защиту"
-  echo "5. Перезагрузить сервисы"
-  echo "6. Установить/обновить Telegram-бот"
-  echo "7. Docker-блокировка (AmneziaWG)"
+  echo ""
+  echo -e "\033[1m══════════════════════════════════════════\033[0m"
+  echo -e "\033[1m       WhiteVPN — Меню управления\033[0m"
+  echo -e "\033[1m══════════════════════════════════════════\033[0m"
+  echo "  1. Обновить списки IP и доменов"
+  echo "  2. Включить защиту"
+  echo "  3. Отключить защиту"
+  echo "  4. Перезагрузить сервисы"
+  echo "  5. Docker-контейнеры"
+  echo "  6. Telegram-бот"
+  echo "  7. Деинсталлировать"
+  echo "  0. Выход"
+  echo -e "\033[1m══════════════════════════════════════════\033[0m"
 
   echo -e "\nБольшой выбор стран, хорошее железо, быстрая поддержка,"
   echo "VPS хостинг, который работает со скидками до -60%:"
@@ -283,45 +314,44 @@ while true; do
       break
       ;;
     1)
-      log "Запуск обновления списка IP и доменов..."
+      log "Обновление списков IP и доменов..."
       "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/block_ips.py" 2>&1 | tee -a "$LOG_FILE"
       "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/blocked-domains/block_domains.py" 2>&1 | tee -a "$LOG_FILE"
       success "Обновление завершено."
       ;;
     2)
-      log "Запуск деинсталляции..."
-      uninstall
-      success "Проект удален."
-      break
+      enable_blocking
       ;;
     3)
-      log "Отключение защиты..."
       disable_blocking
       ;;
     4)
-      log "Включение защиты..."
-      enable_blocking
-      ;;
-    5)
-      log "Перезапуск unbound и iptables..."
+      log "Перезапуск сервисов..."
       systemctl restart unbound
       iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
       iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
-      # Docker-правила
       if [ -f "$DOCKER_RULES" ] && [ -f /etc/block-ips/docker_containers.conf ]; then
         bash "$DOCKER_RULES" apply-ipt 2>&1
       fi
-      success "Перезапуск завершен."
+      success "Сервисы перезапущены."
+      ;;
+    5)
+      docker_menu
       ;;
     6)
-      log "Управление Telegram-ботом..."
       manage_bot
       ;;
     7)
-      docker_menu
+      echo ""
+      echo -e "\033[31m[!] Все данные проекта будут удалены!\033[0m"
+      read -rp "  Вы уверены? (y/n): " confirm
+      if [[ "$confirm" =~ ^[yYдД] ]]; then
+        uninstall
+        break
+      fi
       ;;
     *)
-      error "Неверный выбор. Пожалуйста, выберите 0 - 7."
+      error "Неверный выбор. Выберите 0 - 7."
       ;;
   esac
 done

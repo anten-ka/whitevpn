@@ -384,21 +384,24 @@ DOCKER_RULES="$SYSTEM_INSTALL_DIR/docker_rules.sh"
 if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   echo "" | tee -a "$LOG_FILE"
   log "Docker обнаружен на сервере."
-  log "Хотите настроить блокировку для Docker-контейнеров (AmneziaWG и др.)?"
-  read -rp "  Настроить Docker-блокировку? (y/n): " setup_docker
+  echo ""
+
+  # Автосканирование
+  bash "$DOCKER_RULES" scan 2>&1 | tee -a "$LOG_FILE"
+
+  echo ""
+  log "Хотите автоматически настроить защиту VPN-контейнеров?"
+  log "(iptables + DNS + Unbound — всё за один шаг)"
+  echo ""
+  read -rp "  Настроить автоматически? (y/n): " setup_docker
 
   if [[ "$setup_docker" =~ ^[yYдД] ]]; then
-    # Выбор контейнеров
-    bash "$DOCKER_RULES" select
+    bash "$DOCKER_RULES" auto-setup 2>&1 | tee -a "$LOG_FILE"
 
     if [ $? -eq 0 ]; then
-      read -rp "  Применить правила блокировки для выбранных контейнеров? (y/n): " apply_rules
-      if [[ "$apply_rules" =~ ^[yYдД] ]]; then
-        bash "$DOCKER_RULES" enable 2>&1 | tee -a "$LOG_FILE"
-
-        # Создание systemd-сервиса для восстановления правил после рестарта Docker
-        log "Создание сервиса восстановления Docker-правил..."
-        cat << DEOF | sudo tee /etc/systemd/system/docker-block-restore.service > /dev/null
+      # Создание systemd-сервиса для восстановления правил после рестарта
+      log "Создание сервиса восстановления Docker-правил..."
+      cat << DEOF | sudo tee /etc/systemd/system/docker-block-restore.service > /dev/null
 [Unit]
 Description=Restore WhiteVPN Docker blocking rules after Docker restart
 After=docker.service block-ips.service
@@ -413,14 +416,12 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 DEOF
-        sudo systemctl daemon-reload >> "$LOG_FILE" 2>&1
-        sudo systemctl enable docker-block-restore.service >> "$LOG_FILE" 2>&1
-        success "Docker-блокировка настроена."
-        success "Сервис docker-block-restore.service создан (автовосстановление правил)."
-      fi
+      sudo systemctl daemon-reload >> "$LOG_FILE" 2>&1
+      sudo systemctl enable docker-block-restore.service >> "$LOG_FILE" 2>&1
+      success "Сервис docker-block-restore.service создан (автовосстановление)."
     fi
   else
-    log "Docker-блокировка пропущена. Настроить позже: blockme -> пункт 7"
+    log "Docker-блокировка пропущена. Настроить позже: blockme → пункт 5"
   fi
 else
   log "Docker не обнаружен. Docker-блокировка пропущена."
