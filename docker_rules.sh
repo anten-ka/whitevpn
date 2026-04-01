@@ -28,7 +28,7 @@ UNBOUND_CONF="/etc/unbound/unbound.conf"
 IPSET_NAME="blocked_ips"
 DAEMON_JSON="/etc/docker/daemon.json"
 MARKER="# whitevpn-docker"
-VERSION="0.2"
+VERSION="0.3"
 
 # ─── Цветной вывод ──────────────────────────────────────────────────
 
