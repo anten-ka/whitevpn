@@ -12,7 +12,7 @@ import aiohttp
 import logging
 
 # Version constant
-VERSION = "0.2"
+VERSION = "0.3"
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -223,23 +223,27 @@ async def confirm_disable_callback(callback: CallbackQuery):
         return
     await callback.message.edit_text("Отключение защиты...")
 
-    commands = [
-        ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        ["systemctl", "stop", "unbound"],
-        ["systemctl", "stop", "block-ips.service"],
-        ["systemctl", "stop", "block-domains.service"],
-        ["sh", "-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf"]
-    ]
+    try:
+        commands = [
+            ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
+            ["systemctl", "stop", "unbound"],
+            ["systemctl", "stop", "block-ips.service"],
+            ["systemctl", "stop", "block-domains.service"],
+            ["sh", "-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf"]
+        ]
 
-    for cmd in commands:
-        subprocess.run(cmd, capture_output=True, text=True)
+        for cmd in commands:
+            subprocess.run(cmd, capture_output=True, text=True)
 
-    if os.path.exists(DOCKER_RULES_SCRIPT):
-        subprocess.run(["bash", DOCKER_RULES_SCRIPT, "disable"],
-                       capture_output=True, text=True, timeout=30)
+        if os.path.exists(DOCKER_RULES_SCRIPT):
+            subprocess.run(["bash", DOCKER_RULES_SCRIPT, "disable"],
+                           capture_output=True, text=True, timeout=30)
 
-    await callback.message.edit_text("Защита отключена.")
-    log_to_file("Защита отключена")
+        await callback.message.edit_text("Защита отключена.")
+        log_to_file("Защита отключена")
+    except Exception as e:
+        await callback.message.edit_text(f"Ошибка при отключении: {str(e)}")
+        log_to_file(f"Ошибка отключения: {str(e)}")
     await callback.answer()
 
 @dp.callback_query(F.data == "cancel_disable")
