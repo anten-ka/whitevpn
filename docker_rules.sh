@@ -28,6 +28,7 @@ UNBOUND_CONF="/etc/unbound/unbound.conf"
 IPSET_NAME="blocked_ips"
 DAEMON_JSON="/etc/docker/daemon.json"
 MARKER="# whitevpn-docker"
+VERSION="0.2"
 
 # ─── Цветной вывод ──────────────────────────────────────────────────
 
@@ -86,6 +87,11 @@ get_configured_subnets() {
 }
 
 # ─── Классификация контейнера по образу ──────────────────────────────
+
+
+json_escape() {
+  echo -n "classify_container()" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
+}
 
 classify_container() {
   local image="$1"
@@ -542,7 +548,7 @@ auto_setup() {
 
   # ─── Шаг 4: DNS Docker-демона (daemon.json) ───────────────────
   local daemon_config="{}"
-  [ -f "$DAEMON_JSON" ] && daemon_config=$(cat "$DAEMON_JSON")
+  [ -f "$DAEMON_JSON" ] && daemon_config=$(python3 -c "import json; print(json.dumps(json.load(open('$DAEMON_JSON')), indent=2))")
 
   local new_config
   new_config=$(python3 -c "
@@ -914,7 +920,7 @@ configure_docker_dns() {
 
   log "Настраиваю DNS Docker-демона на $gateway..."
   local daemon_config="{}"
-  [ -f "$DAEMON_JSON" ] && daemon_config=$(cat "$DAEMON_JSON")
+  [ -f "$DAEMON_JSON" ] && daemon_config=$(python3 -c "import json; print(json.dumps(json.load(open('$DAEMON_JSON')), indent=2))")
 
   local new_config
   new_config=$(python3 -c "
@@ -976,8 +982,11 @@ enable_docker_blocking() {
   if [ ! -f "$DAEMON_JSON" ] || ! grep -q '"dns"' "$DAEMON_JSON" 2>/dev/null; then
     echo ""
     warn "DNS Docker-демона не настроен — блокировка доменов не будет работать."
-    read -rp "  Настроить DNS сейчас? (y/n): " setup_dns
+    if [ -t 0 ]; then (y/n): " setup_dns
     [[ "$setup_dns" =~ ^[yYдД] ]] && configure_docker_dns
+    else
+      log "Неинтерактивный режим — пропуск настройки DNS. Используйте 'dns-on' вручную."
+    fi
   fi
   success "Docker-блокировка включена."
 }
