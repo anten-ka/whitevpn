@@ -1,4 +1,5 @@
 #!/bin/bash
+VERSION="0.2"
 
 # Настройка путей и логирования
 SYSTEM_INSTALL_DIR="/opt/block-traffic"
@@ -280,7 +281,7 @@ docker_menu() {
 while true; do
   echo ""
   echo -e "\033[1m══════════════════════════════════════════\033[0m"
-  echo -e "\033[1m       WhiteVPN — Меню управления\033[0m"
+  echo -e "\033[1m       WhiteVPN v$VERSION — Меню управления\033[0m"
   echo -e "\033[1m══════════════════════════════════════════\033[0m"
   echo "  1. Обновить списки IP и доменов"
   echo "  2. Включить защиту"
