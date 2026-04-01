@@ -5,6 +5,8 @@ import os
 import shutil
 from datetime import datetime
 
+VERSION = "0.3"
+
 # Определение директории логов
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "logs")
