@@ -1,4 +1,5 @@
 #!/bin/bash
+VERSION="0.2"
 
 # Функции для цветного вывода и логирования
 log() {
@@ -73,7 +74,7 @@ fi
 if systemctl list-units --full -all | grep -Fq "block-domains.service"; then
   log "Отключение и удаление существующего сервиса block-domains..."
 
-  if [ -f /etc/systemd/system/block-ips.service ]; then
+  if [ -f /etc/systemd/system/block-domains.service ]; then
     sudo systemctl stop block-domains.service
     sudo systemctl disable block-domains.service
     sudo rm -f /etc/systemd/system/block-domains.service
