@@ -4,11 +4,12 @@ import os
 import re
 import time
 from datetime import datetime
-from aiogram import Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.client.session import aiohttp_session
 import aiohttp
+import json
 import logging
 
 # Version constant
@@ -19,9 +20,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-ADMIN_IDS = [123456789]  # Replace with actual admin IDs
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
+CONFIG_FILE = "/etc/block-ips/bot_config.json"
 DOCKER_RULES_SCRIPT = "/opt/block-traffic/docker_rules.sh"
+
+def load_config():
+    """Load bot configuration from JSON file."""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            config = json.load(f)
+        return config.get("BOT_TOKEN", ""), [int(config.get("ADMIN_ID", 0))]
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+        logging.error(f"Failed to load config from {CONFIG_FILE}: {e}")
+        # Fallback to environment variables
+        token = os.getenv("BOT_TOKEN", "")
+        admin_id = int(os.getenv("ADMIN_ID", "0"))
+        return token, [admin_id]
+
+BOT_TOKEN, ADMIN_IDS = load_config()
+if not BOT_TOKEN:
+    logging.critical("BOT_TOKEN not configured. Check /etc/block-ips/bot_config.json")
+    exit(1)
 
 # Directories
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -73,6 +91,7 @@ async def show_ad_if_needed(message: types.Message):
     pass
 
 # Initialize dispatcher and bot
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ============= MESSAGE HANDLERS =============
@@ -464,9 +483,8 @@ async def main():
     """Main entry point."""
     logger.info(f"Starting WhiteVPN Bot v{VERSION}")
     log_to_file(f"Bot started (v{VERSION})")
-
-    # Start polling (this is a placeholder - actual bot setup depends on your framework)
-    # await dp.start_polling()
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     logger.info(f"WhiteVPN Bot v{VERSION} initialized")
+    asyncio.run(main())
