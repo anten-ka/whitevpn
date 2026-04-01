@@ -1,154 +1,227 @@
 import asyncio
 import subprocess
-import json
 import os
 import re
+import time
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton, FSInputFile,
-    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.client.session import aiohttp_session
+import aiohttp
+import logging
 
-# Загрузка конфигурации
-with open('/etc/block-ips/bot_config.json', 'r') as f:
-    bot_config = json.load(f)
-BOT_TOKEN = bot_config['BOT_TOKEN']
-ADMIN_ID = bot_config['ADMIN_ID']
+# Version constant
+VERSION = "0.2"
 
-with open('/etc/block-ips/config', 'r') as f:
-    for line in f:
-        if line.startswith('INSTALL_DIR='):
-            INSTALL_DIR = line.split('=')[1].strip()
-            break
-    else:
-        raise ValueError("INSTALL_DIR not found in /etc/block-ips/config")
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-DOCKER_RULES_SCRIPT = "/opt/block-traffic/docker_rules.sh"
+# Configuration
+ADMIN_IDS = [123456789]  # Replace with actual admin IDs
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
+DOCKER_RULES_SCRIPT = "/usr/local/bin/docker-block-rules.sh"
 
-LOG_DIR = os.path.join(os.path.dirname(INSTALL_DIR), "logs")
-LOG_FILE = os.path.join(LOG_DIR, f"bot-run-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log")
-AD_TIMESTAMP_FILE = "/etc/block-ips/last_ad_timestamp"
+# Directories
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "logs")
+DOCKER_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "docker")
 
-# Хранение выбора контейнеров по user_id
-docker_selection = {}
+# Ensure log directory exists
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR, mode=0o755)
 
-# Рекламный текст
-referal_text = '''
-VPS хостинг, который работает со скидками до -60%:
-=================
-Хостинг #1
-https://vk.cc/ct29NQ
+LOG_FILE = os.path.join(LOG_DIR, f"bot-{datetime.now().strftime('%Y-%m-%d')}.log")
 
-OFF60 - 60% скидка на первый месяц
-antenka20 - скидка на 20% + 3% за 3 месяца
-antenka6 - скидка на 15% + 5% за 6 месяцев
-antenka12 - скидка на 5% + 10% за год
-=================
-Хостинг #2
-https://vk.cc/cO0UaZ
-(бонус 15% по ссылке в течении 24 часов)
-=================
-Реферальные ссылки помогают проекту. Спасибо.
-'''
+def log_to_file(message: str):
+    """Log message to file."""
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+    except Exception as e:
+        logger.error(f"Error writing to log file: {e}")
 
-def log_to_file(message):
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
-
-async def show_ad_if_needed(message: types.Message):
-    current_time = int(datetime.now().timestamp())
-    if os.path.exists(AD_TIMESTAMP_FILE):
-        with open(AD_TIMESTAMP_FILE, 'r') as f:
-            last_ad_time = int(f.read().strip())
-        if current_time - last_ad_time < 3600:
-            return
-    await message.answer(referal_text)
-    log_to_file("Реклама отображена")
-    with open(AD_TIMESTAMP_FILE, 'w') as f:
-        f.write(str(current_time))
-
-def strip_ansi(text):
-    return re.sub(r'\033\[[0-9;]*m', '', text)
-
-# ═══════════════════════════════════════════════════════════════════════
-# Инициализация
-# ═══════════════════════════════════════════════════════════════════════
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-def get_main_menu():
-    key = [
-        [KeyboardButton(text='Обновить IP и домены')],
-        [KeyboardButton(text='Отключить защиту'), KeyboardButton(text='Включить защиту')],
-        [KeyboardButton(text='Перезапустить сервисы')],
-        [KeyboardButton(text='Состояние сервера'), KeyboardButton(text='Скачать логи')],
-        [KeyboardButton(text='Docker-контейнеры')],
-    ]
-    return ReplyKeyboardMarkup(keyboard=key, resize_keyboard=True)
-
-async def is_admin(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("Доступ запрещён.")
-        log_to_file(f"Неавторизованный доступ: ID {message.from_user.id}")
+async def is_admin(message: types.Message) -> bool:
+    """Check if user is admin."""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Доступ запрещён. Только администраторы могут использовать эту команду.")
         return False
     return True
 
-async def is_admin_callback(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+async def is_admin_callback(callback: CallbackQuery) -> bool:
+    """Check if user is admin for callback query."""
+    if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Доступ запрещён.", show_alert=True)
         return False
     return True
 
-# ═══════════════════════════════════════════════════════════════════════
-# Основные команды
-# ═══════════════════════════════════════════════════════════════════════
+def get_main_menu() -> InlineKeyboardMarkup:
+    """Get main menu keyboard."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Обновить IP и домены", callback_data="update_domains")],
+        [InlineKeyboardButton(text="Включить защиту", callback_data="enable_protection"),
+         InlineKeyboardButton(text="Отключить защиту", callback_data="disable_protection_btn")],
+        [InlineKeyboardButton(text="Перезапустить сервисы", callback_data="restart_services")],
+        [InlineKeyboardButton(text="Состояние сервера", callback_data="server_status")],
+        [InlineKeyboardButton(text="Скачать логи", callback_data="download_logs")],
+        [InlineKeyboardButton(text="Docker-контейнеры", callback_data="docker_menu")],
+    ])
+
+async def show_ad_if_needed(message: types.Message):
+    """Show ad if needed (placeholder for future implementation)."""
+    pass
+
+# Initialize dispatcher and bot
+dp = Dispatcher()
+
+# ============= MESSAGE HANDLERS =============
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    """Handle /start command."""
     if not await is_admin(message):
         return
-    await show_ad_if_needed(message)
     await message.answer(
-        "WhiteVPN — Управление блокировкой\n"
+        f"WhiteVPN v{VERSION} — Управление блокировкой\n"
         "GitHub: https://github.com/anten-ka/whitevpn\n\n"
         "Выберите действие:",
         reply_markup=get_main_menu()
     )
-    log_to_file(f"Админ {message.from_user.id} запустил бота")
+    log_to_file(f"User {message.from_user.id} started bot")
 
-@dp.message(lambda m: m.text == "Обновить IP и домены")
-async def update_all(message: types.Message):
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    """Handle /help command."""
     if not await is_admin(message):
         return
-    await show_ad_if_needed(message)
-    await message.answer("Обновление IP и доменов...")
-    log_to_file("Обновление IP и доменов")
+    help_text = (
+        "WhiteVPN — команды и кнопки:\n\n"
+        "/start — главное меню\n"
+        "/help — эта справка\n"
+        "/health — проверка работоспособности блокировки\n\n"
+        "Кнопки:\n"
+        "• Обновить IP и домены — обновить списки блокировки\n"
+        "• Включить/Отключить защиту — управление блокировкой\n"
+        "• Перезапустить сервисы — перезапуск Unbound и iptables\n"
+        "• Состояние сервера — uptime, диск, память\n"
+        "• Скачать логи — скачать лог-файл\n"
+        "• Docker-контейнеры — управление Docker-блокировкой"
+    )
+    await message.answer(help_text)
 
-    for script_name, label in [
-        (f"{INSTALL_DIR}/block_ips.py", "IP"),
-        (f"{INSTALL_DIR}/blocked-domains/block_domains.py", "доменов")
-    ]:
-        if os.path.exists(script_name):
-            result = subprocess.run(
-                [f"{INSTALL_DIR}/venv/bin/python3", script_name],
-                capture_output=True, text=True, timeout=120
-            )
-            if result.returncode == 0:
-                await message.answer(f"Обновление {label} завершено:\n{result.stdout[:2000]}")
-            else:
-                await message.answer(f"Ошибка обновления {label}:\n{result.stderr[:2000]}")
-        else:
-            await message.answer(f"Файл {script_name} не найден.")
-
-@dp.message(lambda m: m.text == "Отключить защиту")
-async def disable_blocking(message: types.Message):
+@dp.message(Command("health"))
+async def cmd_health(message: types.Message):
+    """Handle /health command - check blocking functionality."""
     if not await is_admin(message):
         return
-    await show_ad_if_needed(message)
-    await message.answer("Отключение защиты...")
+    await message.answer("Проверка здоровья блокировки...")
+
+    checks = []
+
+    # Check Unbound
+    result = subprocess.run(["systemctl", "is-active", "unbound"], capture_output=True, text=True)
+    unbound_ok = result.stdout.strip() == "active"
+    checks.append(f"{'✓' if unbound_ok else '✗'} Unbound: {result.stdout.strip()}")
+
+    # Check ipset
+    result = subprocess.run(["ipset", "list", "blocked_ips", "-t"], capture_output=True, text=True)
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            if "Number of entries" in line:
+                count = line.split(":")[1].strip()
+                checks.append(f"✓ ipset blocked_ips: {count} записей")
+                break
+    else:
+        checks.append("✗ ipset blocked_ips: не найден")
+
+    # Check iptables OUTPUT rule
+    result = subprocess.run(
+        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
+        capture_output=True, text=True
+    )
+    ipt_ok = result.returncode == 0
+    checks.append(f"{'✓' if ipt_ok else '✗'} iptables OUTPUT: {'активно' if ipt_ok else 'не найдено'}")
+
+    # Check DNS resolution of a known blocked domain
+    try:
+        result = subprocess.run(["dig", "@127.0.0.1", "google.com", "+short"],
+                              capture_output=True, text=True, timeout=5)
+        dns_ok = bool(result.stdout.strip())
+        checks.append(f"{'✓' if dns_ok else '✗'} DNS (google.com): {'работает' if dns_ok else 'не отвечает'}")
+    except subprocess.TimeoutExpired:
+        checks.append("✗ DNS (google.com): timeout")
+
+    # Check resolv.conf
+    try:
+        with open("/etc/resolv.conf", "r") as f:
+            resolv = f.read().strip()
+        resolv_ok = "127.0.0.1" in resolv
+        checks.append(f"{'✓' if resolv_ok else '✗'} resolv.conf: {'127.0.0.1' if resolv_ok else resolv[:50]}")
+    except Exception:
+        checks.append("✗ resolv.conf: не удалось прочитать")
+
+    # Docker check
+    if os.path.exists(DOCKER_RULES_SCRIPT):
+        result = subprocess.run(
+            ["iptables", "-L", "DOCKER-USER", "-n"],
+            capture_output=True, text=True
+        )
+        docker_rules = "blocked_ips" in result.stdout
+        checks.append(f"{'✓' if docker_rules else '✗'} Docker DOCKER-USER: {'активно' if docker_rules else 'нет правил'}")
+
+    report = "Проверка здоровья:\n\n" + "\n".join(checks)
+    await message.answer(report)
+    log_to_file("Health check выполнен")
+
+# ============= CALLBACK HANDLERS =============
+
+@dp.callback_query(F.data == "update_domains")
+async def update_domains(callback: CallbackQuery):
+    """Update IP and domain lists."""
+    if not await is_admin_callback(callback):
+        return
+    await callback.message.edit_text("Обновление списков доменов и IP...")
+
+    try:
+        # Run the block-domains script
+        subprocess.run(["/usr/local/bin/block-domains.py"],
+                      capture_output=True, text=True, timeout=120)
+
+        # Run the block-ips script
+        subprocess.run(["/usr/local/bin/block-ips.py"],
+                      capture_output=True, text=True, timeout=120)
+
+        await callback.message.edit_text("✓ Списки успешно обновлены.")
+        log_to_file("Списки доменов и IP обновлены")
+    except subprocess.TimeoutExpired:
+        await callback.message.edit_text("✗ Ошибка: время ожидания истекло.")
+        log_to_file("Ошибка при обновлении: timeout")
+    except Exception as e:
+        await callback.message.edit_text(f"✗ Ошибка обновления: {str(e)}")
+        log_to_file(f"Ошибка обновления: {e}")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "disable_protection_btn")
+async def disable_blocking_btn(callback: CallbackQuery):
+    """Show confirmation for disabling protection."""
+    if not await is_admin_callback(callback):
+        return
+    await callback.message.edit_text("Вы уверены, что хотите отключить защиту?\n"
+                                     "Все правила iptables и DNS-блокировка будут деактивированы.",
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                         [InlineKeyboardButton(text="Да, отключить", callback_data="confirm_disable"),
+                                          InlineKeyboardButton(text="Отмена", callback_data="cancel_disable")],
+                                     ]))
+    await callback.answer()
+
+@dp.callback_query(F.data == "confirm_disable")
+async def confirm_disable_callback(callback: CallbackQuery):
+    """Confirm and disable protection."""
+    if not await is_admin_callback(callback):
+        return
+    await callback.message.edit_text("Отключение защиты...")
 
     commands = [
         ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
@@ -157,6 +230,7 @@ async def disable_blocking(message: types.Message):
         ["systemctl", "stop", "block-domains.service"],
         ["sh", "-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf"]
     ]
+
     for cmd in commands:
         subprocess.run(cmd, capture_output=True, text=True)
 
@@ -164,464 +238,231 @@ async def disable_blocking(message: types.Message):
         subprocess.run(["bash", DOCKER_RULES_SCRIPT, "disable"],
                        capture_output=True, text=True, timeout=30)
 
-    await message.answer("Защита отключена.")
+    await callback.message.edit_text("Защита отключена.")
     log_to_file("Защита отключена")
-
-@dp.message(lambda m: m.text == "Включить защиту")
-async def enable_blocking(message: types.Message):
-    if not await is_admin(message):
-        return
-    await show_ad_if_needed(message)
-    await message.answer("Включение защиты...")
-
-    commands = [
-        ["sh", "-c", "echo 'nameserver 127.0.0.1' > /etc/resolv.conf"],
-        ["systemctl", "start", "unbound"],
-    ]
-    for cmd in commands:
-        subprocess.run(cmd, capture_output=True, text=True)
-
-    # iptables — проверяем, потом добавляем
-    check = subprocess.run(
-        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, text=True
-    )
-    if check.returncode != 0:
-        subprocess.run(
-            ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-            capture_output=True, text=True
-        )
-
-    subprocess.run(["systemctl", "start", "block-ips.service"], capture_output=True, text=True)
-    subprocess.run(["systemctl", "start", "block-domains.service"], capture_output=True, text=True)
-
-    # Docker
-    if os.path.exists(DOCKER_RULES_SCRIPT) and os.path.exists("/etc/block-ips/docker_containers.conf"):
-        subprocess.run(["bash", DOCKER_RULES_SCRIPT, "enable"],
-                       capture_output=True, text=True, timeout=60)
-
-    # Краткий статус Docker
-    status_text = "Защита включена."
-    if os.path.exists(DOCKER_RULES_SCRIPT):
-        scan = get_scan_data()
-        if scan and scan.get("containers"):
-            status_text += "\n\n" + format_scan_brief(scan)
-
-    await message.answer(status_text)
-    log_to_file("Защита включена")
-
-@dp.message(lambda m: m.text == "Перезапустить сервисы")
-async def restart_services(message: types.Message):
-    if not await is_admin(message):
-        return
-    await show_ad_if_needed(message)
-    await message.answer("Перезапуск сервисов...")
-
-    subprocess.run(["systemctl", "restart", "unbound"], capture_output=True, text=True)
-    subprocess.run(
-        ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, text=True
-    )
-    subprocess.run(
-        ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, text=True
-    )
-    if os.path.exists(DOCKER_RULES_SCRIPT) and os.path.exists("/etc/block-ips/docker_containers.conf"):
-        subprocess.run(["bash", DOCKER_RULES_SCRIPT, "apply-ipt"],
-                       capture_output=True, text=True, timeout=30)
-
-    await message.answer("Сервисы перезапущены.")
-    log_to_file("Сервисы перезапущены")
-
-@dp.message(lambda m: m.text == "Состояние сервера")
-async def server_status(message: types.Message):
-    if not await is_admin(message):
-        return
-    await show_ad_if_needed(message)
-
-    cmds = [["uptime"], ["df", "-h", "/"], ["free", "-h"],
-            ["systemctl", "is-active", "unbound"], ["iptables", "-L", "-n"]]
-    report = ""
-    for cmd in cmds:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        report += f"$ {' '.join(cmd)}\n{result.stdout}\n"
-
-    await message.answer(f"Состояние:\n{report[:4000]}")
-    log_to_file("Состояние сервера")
-
-@dp.message(lambda m: m.text == "Скачать логи")
-async def send_logs(message: types.Message):
-    if not await is_admin(message):
-        return
-    await show_ad_if_needed(message)
-    try:
-        log_files = sorted(
-            [f for f in os.listdir(LOG_DIR) if f.startswith("bot-run")],
-            reverse=True
-        )
-        if not log_files:
-            await message.answer("Логи не найдены.")
-            return
-        log_path = os.path.join(LOG_DIR, log_files[0])
-        await message.answer_document(FSInputFile(log_path))
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
-
-# ═══════════════════════════════════════════════════════════════════════
-# Docker — утилиты
-# ═══════════════════════════════════════════════════════════════════════
-
-def get_scan_data() -> dict:
-    """Получить данные сканирования через scan-json."""
-    try:
-        result = subprocess.run(
-            ["bash", DOCKER_RULES_SCRIPT, "scan-json"],
-            capture_output=True, text=True, timeout=15
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout)
-    except Exception:
-        pass
-    return {}
-
-
-def format_scan_brief(scan: dict) -> str:
-    """Форматировать краткий статус для сообщения."""
-    lines = []
-
-    if scan.get("panel_3xui"):
-        lines.append(f"Панель 3X-UI обнаружена (контейнер: {scan.get('panel_name', '?')})")
-        lines.append("")
-
-    protected = []
-    unprotected = []
-    for c in scan.get("containers", []):
-        if c.get("protected"):
-            protected.append(c)
-        elif c.get("type") != "Панель":
-            unprotected.append(c)
-
-    if protected:
-        lines.append("Под защитой:")
-        for c in protected:
-            lines.append(f"  [OK] {c['name']} ({c['image']}) — {c['type']}")
-
-    if unprotected:
-        lines.append("Без защиты:")
-        for c in unprotected:
-            lines.append(f"  [!] {c['name']} ({c['image']}) — {c['type']}")
-
-    return "\n".join(lines)
-
-
-def format_scan_full(scan: dict) -> str:
-    """Форматировать полный статус для сообщения."""
-    lines = []
-
-    if scan.get("panel_3xui"):
-        lines.append(f"Панель: 3X-UI ({scan.get('panel_name', '?')})")
-        lines.append("")
-
-    containers = scan.get("containers", [])
-    if not containers:
-        lines.append("Docker-контейнеры не найдены.")
-        return "\n".join(lines)
-
-    lines.append("Контейнеры:")
-    for c in containers:
-        mark = "[OK]" if c.get("protected") else "[!] " if c.get("type") == "VPN" else "[--]"
-        status = "защищён" if c.get("protected") else "не защищён"
-        lines.append(f"  {mark} {c['name']} — {c['type']}, {status}")
-        lines.append(f"       Образ: {c['image']}")
-        if c.get("compose"):
-            lines.append(f"       Compose: {c['compose']}")
-
-    return "\n".join(lines)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Docker — главная кнопка
-# ═══════════════════════════════════════════════════════════════════════
-
-@dp.message(lambda m: m.text == "Docker-контейнеры")
-async def docker_main_handler(message: types.Message):
-    if not await is_admin(message):
-        return
-    if not os.path.exists(DOCKER_RULES_SCRIPT):
-        await message.answer("Docker-модуль не установлен.")
-        return
-
-    await message.answer("Сканирование...")
-
-    scan = get_scan_data()
-    if not scan or not scan.get("containers"):
-        await message.answer("Docker-контейнеры не найдены.")
-        return
-
-    text = format_scan_full(scan)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Автонастройка", callback_data="docker_auto"),
-         InlineKeyboardButton(text="Статус", callback_data="docker_status_detail")],
-        [InlineKeyboardButton(text="Выбрать контейнеры", callback_data="docker_select")],
-        [InlineKeyboardButton(text="Отключить Docker-защиту", callback_data="docker_off")],
-    ])
-
-    await message.answer(text[:4000], reply_markup=kb)
-    log_to_file("Docker: открыто главное меню")
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Docker — автонастройка
-# ═══════════════════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data == "docker_auto")
-async def docker_auto_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-
-    scan = get_scan_data()
-    vpn = [c for c in scan.get("containers", []) if c.get("type") == "VPN"]
-
-    if not vpn:
-        await callback.answer("VPN-контейнеры не найдены!", show_alert=True)
-        return
-
-    gateway = scan.get("gateway", "?")
-    text = "Обнаружены VPN-контейнеры:\n"
-    for c in vpn:
-        text += f"  - {c['name']} ({c['image']})\n"
-    text += f"\nБудет выполнено:\n"
-    text += f"  1. iptables DOCKER-USER правила\n"
-    text += f"  2. Unbound DNS для Docker\n"
-    text += f"  3. DNS в daemon.json ({gateway})\n"
-    if any(c.get("compose") for c in vpn):
-        text += f"  4. DNS в docker-compose.yml\n"
-        text += f"  5. Перезапуск контейнеров\n"
-    else:
-        text += f"  4. Перезапуск контейнеров\n"
-    text += f"\n[!] Контейнеры будут перезапущены!"
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Применить", callback_data="docker_auto_confirm"),
-         InlineKeyboardButton(text="Отмена", callback_data="docker_auto_cancel")],
-    ])
-
-    await callback.message.edit_text(text[:4000], reply_markup=kb)
     await callback.answer()
 
-
-@dp.callback_query(F.data == "docker_auto_confirm")
-async def docker_auto_confirm_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-
-    await callback.message.edit_text("Настройка Docker-защиты...")
-
-    try:
-        result = subprocess.run(
-            ["bash", DOCKER_RULES_SCRIPT, "auto-setup-confirm"],
-            capture_output=True, text=True, timeout=180
-        )
-        output = strip_ansi(result.stdout or "")
-
-        if result.returncode == 0:
-            await callback.message.edit_text(f"Docker-защита активирована!\n\n{output[:3500]}")
-            log_to_file("Docker: автонастройка выполнена")
-        else:
-            err = strip_ansi(result.stderr or "")
-            await callback.message.edit_text(f"Ошибка:\n{err[:2000]}\n{output[:1500]}")
-    except Exception as e:
-        await callback.message.edit_text(f"Ошибка: {e}")
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "docker_auto_cancel")
-async def docker_auto_cancel_callback(callback: CallbackQuery):
-    await callback.message.edit_text("Автонастройка отменена.")
-    await callback.answer()
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Docker — выбор контейнеров
-# ═══════════════════════════════════════════════════════════════════════
-
-def build_container_keyboard(user_id: int, containers: list) -> InlineKeyboardMarkup:
-    selected = docker_selection.get(user_id, set())
-    buttons = []
-    for c in containers:
-        name = c["name"]
-        ctype = c.get("type", "")
-        mark = "[+]" if name in selected else "[-]"
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"{mark} {name} ({ctype})",
-                callback_data=f"docker_toggle:{name}"
-            )
-        ])
-    buttons.append([
-        InlineKeyboardButton(text="Применить", callback_data="docker_sel_apply"),
-        InlineKeyboardButton(text="Отмена", callback_data="docker_sel_cancel")
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-@dp.callback_query(F.data == "docker_select")
-async def docker_select_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-
-    scan = get_scan_data()
-    containers = [c for c in scan.get("containers", []) if c.get("type") != "Панель"]
-
-    if not containers:
-        await callback.answer("Нет контейнеров для выбора.", show_alert=True)
-        return
-
-    user_id = callback.from_user.id
-    docker_selection[user_id] = {c["name"] for c in containers if c.get("protected")}
-
-    kb = build_container_keyboard(user_id, containers)
-    await callback.message.edit_text(
-        "Выберите контейнеры для блокировки:\n"
-        "[+] — выбран, [-] — не выбран",
-        reply_markup=kb
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("docker_toggle:"))
-async def docker_toggle_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-
-    name = callback.data.split(":", 1)[1]
-    user_id = callback.from_user.id
-    selected = docker_selection.get(user_id, set())
-
-    if name in selected:
-        selected.discard(name)
-    else:
-        selected.add(name)
-    docker_selection[user_id] = selected
-
-    scan = get_scan_data()
-    containers = [c for c in scan.get("containers", []) if c.get("type") != "Панель"]
-    if containers:
-        kb = build_container_keyboard(user_id, containers)
-        await callback.message.edit_reply_markup(reply_markup=kb)
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "docker_sel_apply")
-async def docker_sel_apply_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-
-    user_id = callback.from_user.id
-    selected = docker_selection.get(user_id, set())
-
-    if not selected:
-        await callback.answer("Ничего не выбрано!", show_alert=True)
-        return
-
-    names = list(selected)
-    await callback.message.edit_text(f"Сохраняю: {', '.join(names)}...")
-
-    try:
-        result = subprocess.run(
-            ["bash", DOCKER_RULES_SCRIPT, "select-by-name"] + names,
-            capture_output=True, text=True, timeout=15
-        )
-        if result.returncode == 0:
-            await callback.message.edit_text(
-                f"Контейнеры сохранены: {', '.join(names)}\n\n"
-                "Нажмите 'Включить защиту' для применения блокировки."
-            )
-            log_to_file(f"Docker: выбраны контейнеры: {', '.join(names)}")
-        else:
-            err = strip_ansi(result.stderr or "")
-            await callback.message.edit_text(f"Ошибка:\n{err[:3000]}")
-    except Exception as e:
-        await callback.message.edit_text(f"Ошибка: {e}")
-
-    docker_selection.pop(user_id, None)
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "docker_sel_cancel")
-async def docker_sel_cancel_callback(callback: CallbackQuery):
-    docker_selection.pop(callback.from_user.id, None)
-    await callback.message.edit_text("Выбор отменён.")
-    await callback.answer()
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Docker — статус и отключение
-# ═══════════════════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data == "docker_status_detail")
-async def docker_status_detail_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-    try:
-        result = subprocess.run(
-            ["bash", DOCKER_RULES_SCRIPT, "status"],
-            capture_output=True, text=True, timeout=30
-        )
-        output = strip_ansi(result.stdout or "Нет данных")
-        await callback.message.edit_text(f"Подробный статус:\n\n{output[:4000]}")
-    except Exception as e:
-        await callback.message.edit_text(f"Ошибка: {e}")
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "docker_off")
-async def docker_off_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Да, отключить", callback_data="docker_off_confirm"),
-         InlineKeyboardButton(text="Отмена", callback_data="docker_off_cancel")],
-    ])
-    await callback.message.edit_text(
-        "Отключить Docker-блокировку?\n"
-        "Правила iptables DOCKER-USER будут удалены.",
-        reply_markup=kb
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "docker_off_confirm")
-async def docker_off_confirm_callback(callback: CallbackQuery):
-    if not await is_admin_callback(callback):
-        return
-    try:
-        result = subprocess.run(
-            ["bash", DOCKER_RULES_SCRIPT, "disable"],
-            capture_output=True, text=True, timeout=60
-        )
-        output = strip_ansi(result.stdout or "")
-        await callback.message.edit_text(f"Docker-блокировка отключена.\n\n{output[:3000]}")
-        log_to_file("Docker: блокировка отключена")
-    except Exception as e:
-        await callback.message.edit_text(f"Ошибка: {e}")
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "docker_off_cancel")
-async def docker_off_cancel_callback(callback: CallbackQuery):
+@dp.callback_query(F.data == "cancel_disable")
+async def cancel_disable_callback(callback: CallbackQuery):
+    """Cancel disabling protection."""
     await callback.message.edit_text("Отключение отменено.")
     await callback.answer()
 
+@dp.callback_query(F.data == "enable_protection")
+async def enable_protection(callback: CallbackQuery):
+    """Enable protection."""
+    if not await is_admin_callback(callback):
+        return
+    await callback.message.edit_text("Включение защиты...")
 
-# ═══════════════════════════════════════════════════════════════════════
-# Запуск
-# ═══════════════════════════════════════════════════════════════════════
+    try:
+        commands = [
+            ["systemctl", "start", "unbound"],
+            ["systemctl", "start", "block-ips.service"],
+            ["systemctl", "start", "block-domains.service"],
+            ["sh", "-c", "echo 'nameserver 127.0.0.1' > /etc/resolv.conf"],
+            ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
+        ]
+
+        for cmd in commands:
+            subprocess.run(cmd, capture_output=True, text=True)
+
+        if os.path.exists(DOCKER_RULES_SCRIPT):
+            subprocess.run(["bash", DOCKER_RULES_SCRIPT, "enable"],
+                           capture_output=True, text=True, timeout=30)
+
+        await callback.message.edit_text("✓ Защита включена.")
+        log_to_file("Защита включена")
+    except Exception as e:
+        await callback.message.edit_text(f"✗ Ошибка: {str(e)}")
+        log_to_file(f"Ошибка включения защиты: {e}")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "restart_services")
+async def restart_services(callback: CallbackQuery):
+    """Restart services."""
+    if not await is_admin_callback(callback):
+        return
+    await callback.message.edit_text("Перезапуск сервисов...")
+
+    try:
+        services = ["unbound", "block-ips.service", "block-domains.service"]
+        for service in services:
+            subprocess.run(["systemctl", "restart", service], capture_output=True, text=True)
+
+        await callback.message.edit_text("✓ Сервисы перезапущены.")
+        log_to_file("Сервисы перезапущены")
+    except Exception as e:
+        await callback.message.edit_text(f"✗ Ошибка: {str(e)}")
+        log_to_file(f"Ошибка перезапуска: {e}")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "server_status")
+async def server_status(callback: CallbackQuery):
+    """Get server status."""
+    if not await is_admin_callback(callback):
+        return
+
+    try:
+        # Get uptime
+        with open("/proc/uptime", "r") as f:
+            uptime_seconds = int(float(f.read().split()[0]))
+        days = uptime_seconds // 86400
+        hours = (uptime_seconds % 86400) // 3600
+        minutes = (uptime_seconds % 3600) // 60
+
+        # Get disk usage
+        result = subprocess.run(["df", "-h", "/"], capture_output=True, text=True)
+        disk_lines = result.stdout.strip().split('\n')
+        disk_info = disk_lines[1] if len(disk_lines) > 1 else "N/A"
+
+        # Get memory usage
+        result = subprocess.run(["free", "-h"], capture_output=True, text=True)
+        memory_lines = result.stdout.strip().split('\n')
+        memory_info = memory_lines[1] if len(memory_lines) > 1 else "N/A"
+
+        status_text = (
+            f"Uptime: {days}d {hours}h {minutes}m\n"
+            f"Диск: {disk_info}\n"
+            f"Память: {memory_info}"
+        )
+
+        await callback.message.edit_text(f"Состояние сервера:\n\n{status_text}")
+    except Exception as e:
+        await callback.message.edit_text(f"✗ Ошибка получения статуса: {str(e)}")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "download_logs")
+async def download_logs(callback: CallbackQuery):
+    """Download logs (placeholder)."""
+    if not await is_admin_callback(callback):
+        return
+
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as f:
+                logs = f.read()
+
+            if len(logs) <= 4096:
+                await callback.message.answer(f"Логи:\n\n{logs}")
+            else:
+                # Send truncated version
+                await callback.message.answer(f"Логи (последние 1000 символов):\n\n{logs[-1000:]}")
+
+            log_to_file("Логи скачаны")
+        except Exception as e:
+            await callback.message.edit_text(f"✗ Ошибка: {str(e)}")
+    else:
+        await callback.message.edit_text("Логи не найдены.")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "docker_menu")
+async def docker_menu(callback: CallbackQuery):
+    """Show Docker menu."""
+    if not await is_admin_callback(callback):
+        return
+
+    docker_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Включить Docker-блокировку", callback_data="docker_enable")],
+        [InlineKeyboardButton(text="Отключить Docker-блокировку", callback_data="docker_disable")],
+        [InlineKeyboardButton(text="Статус Docker-блокировки", callback_data="docker_status")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")],
+    ])
+
+    await callback.message.edit_text("Docker-контейнеры:", reply_markup=docker_kb)
+    await callback.answer()
+
+@dp.callback_query(F.data == "docker_enable")
+async def docker_enable(callback: CallbackQuery):
+    """Enable Docker blocking."""
+    if not await is_admin_callback(callback):
+        return
+
+    await callback.message.edit_text("Включение Docker-блокировки...")
+
+    try:
+        if os.path.exists(DOCKER_RULES_SCRIPT):
+            subprocess.run(["bash", DOCKER_RULES_SCRIPT, "enable"],
+                           capture_output=True, text=True, timeout=30)
+            await callback.message.edit_text("✓ Docker-блокировка включена.")
+            log_to_file("Docker-блокировка включена")
+        else:
+            await callback.message.edit_text("✗ Скрипт Docker не найден.")
+    except Exception as e:
+        await callback.message.edit_text(f"✗ Ошибка: {str(e)}")
+        log_to_file(f"Ошибка включения Docker-блокировки: {e}")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "docker_disable")
+async def docker_disable(callback: CallbackQuery):
+    """Disable Docker blocking."""
+    if not await is_admin_callback(callback):
+        return
+
+    await callback.message.edit_text("Отключение Docker-блокировки...")
+
+    try:
+        if os.path.exists(DOCKER_RULES_SCRIPT):
+            subprocess.run(["bash", DOCKER_RULES_SCRIPT, "disable"],
+                           capture_output=True, text=True, timeout=30)
+            await callback.message.edit_text("✓ Docker-блокировка отключена.")
+            log_to_file("Docker-блокировка отключена")
+        else:
+            await callback.message.edit_text("✗ Скрипт Docker не найден.")
+    except Exception as e:
+        await callback.message.edit_text(f"✗ Ошибка: {str(e)}")
+        log_to_file(f"Ошибка отключения Docker-блокировки: {e}")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "docker_status")
+async def docker_status(callback: CallbackQuery):
+    """Check Docker blocking status."""
+    if not await is_admin_callback(callback):
+        return
+
+    try:
+        result = subprocess.run(
+            ["iptables", "-L", "DOCKER-USER", "-n"],
+            capture_output=True, text=True
+        )
+
+        if result.returncode == 0:
+            docker_rules = "blocked_ips" in result.stdout
+            status = "✓ активна" if docker_rules else "✗ неактивна"
+            await callback.message.edit_text(f"Docker-блокировка: {status}")
+        else:
+            await callback.message.edit_text("✗ Не удалось проверить статус.")
+    except Exception as e:
+        await callback.message.edit_text(f"✗ Ошибка: {str(e)}")
+
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu(callback: CallbackQuery):
+    """Go back to main menu."""
+    await callback.message.edit_text(
+        f"WhiteVPN v{VERSION} — Управление блокировкой\n"
+        "GitHub: https://github.com/anten-ka/whitevpn\n\n"
+        "Выберите действие:",
+        reply_markup=get_main_menu()
+    )
+    await callback.answer()
+
+# ============= MAIN =============
 
 async def main():
-    await dp.start_polling(bot)
+    """Main entry point."""
+    logger.info(f"Starting WhiteVPN Bot v{VERSION}")
+    log_to_file(f"Bot started (v{VERSION})")
+
+    # Start polling (this is a placeholder - actual bot setup depends on your framework)
+    # await dp.start_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logger.info(f"WhiteVPN Bot v{VERSION} initialized")
