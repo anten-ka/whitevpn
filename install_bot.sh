@@ -1,4 +1,10 @@
 #!/bin/bash
+VERSION="0.3"
+
+if [ "$EUID" -ne 0 ]; then
+  echo -e "\033[31m[!] Запустите скрипт от root: sudo bash install_bot.sh\033[0m"
+  exit 1
+fi
 
 # Функции для цветного вывода и логирования
 log() { echo -e "\033[34m[INFO]\033[0m $1" | tee -a "$LOG_FILE"; }
@@ -113,6 +119,12 @@ read -p "Введите токен Telegram-бота: " BOT_TOKEN
 read -p "Введите Telegram ID администратора: " ADMIN_ID
 if [ -z "$BOT_TOKEN" ] || [ -z "$ADMIN_ID" ]; then
   error "Токен или Telegram ID не указаны."
+  exit 1
+fi
+
+# Проверка что ADMIN_ID — число
+if ! [[ "$ADMIN_ID" =~ ^[0-9]+$ ]]; then
+  error "Telegram ID должен быть числом. Получено: $ADMIN_ID"
   exit 1
 fi
 
