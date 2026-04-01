@@ -4,6 +4,8 @@ import subprocess
 import os
 from datetime import datetime
 
+VERSION = "0.3"
+
 # Определение директории логов
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "logs")
@@ -69,9 +71,15 @@ def fetch_and_block_domains():
         all_domains.extend([d for d in domains if '.' in d])
 
     unique_domains = set(all_domains)
-    with open("/etc/unbound/blocked-domains.conf", "w") as f:
-        for domain in unique_domains:
-            f.write(f'local-zone: "{domain}." deny\n')
+    try:
+        with open("/etc/unbound/blocked-domains.conf", "w") as f:
+            for domain in unique_domains:
+                f.write(f'local-zone: "{domain}." deny\n')
+    except IOError as e:
+        error_msg = f"Ошибка записи blocked-domains.conf: {e}"
+        print(error_msg)
+        log_to_file(error_msg)
+        return
 
     try:
         message = f"Обработано {len(unique_domains)} доменов"
