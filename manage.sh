@@ -1,5 +1,10 @@
 #!/bin/bash
-VERSION="0.2"
+VERSION="0.3"
+
+if [ "$EUID" -ne 0 ]; then
+  echo -e "\033[31m[!] Запустите скрипт от root: sudo blockme\033[0m"
+  exit 1
+fi
 
 # Настройка путей и логирования
 SYSTEM_INSTALL_DIR="/opt/block-traffic"
@@ -162,7 +167,7 @@ uninstall() {
   rm -rf /etc/block-ips
 
   log "Сброс DNS на 8.8.8.8..."
-  echo 'nameserver 8.8.8.8' | tee /etc/resolv.conf > /dev/null
+  echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf > /dev/null
 
   success "Деинсталляция завершена."
 }
@@ -176,7 +181,7 @@ enable_blocking() {
   echo ""
 
   log "DNS → 127.0.0.1"
-  echo 'nameserver 127.0.0.1' | tee /etc/resolv.conf > /dev/null
+  echo 'nameserver 127.0.0.1' | sudo tee /etc/resolv.conf > /dev/null
   success "DNS настроен"
 
   log "Запуск Unbound..."
@@ -212,7 +217,7 @@ disable_blocking() {
   systemctl stop unbound
   systemctl stop block-ips.service 2>/dev/null
   systemctl stop block-domains.service 2>/dev/null
-  echo 'nameserver 8.8.8.8' | tee /etc/resolv.conf > /dev/null
+  echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf > /dev/null
 
   if [ -f "$DOCKER_RULES" ]; then
     bash "$DOCKER_RULES" disable 2>&1
