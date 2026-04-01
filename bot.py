@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 ADMIN_IDS = [123456789]  # Replace with actual admin IDs
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
-DOCKER_RULES_SCRIPT = "/usr/local/bin/docker-block-rules.sh"
+DOCKER_RULES_SCRIPT = "/opt/block-traffic/docker_rules.sh"
 
 # Directories
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
