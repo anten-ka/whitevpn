@@ -1,4 +1,4 @@
-![Version](https://img.shields.io/badge/version-0.2-blue)
+![Version](https://img.shields.io/badge/version-0.3-blue)
 
 # WhiteVPN — блокировка нежелательных ресурсов на VPN-сервере
 
