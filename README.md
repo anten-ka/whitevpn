@@ -1,3 +1,5 @@
+![Version](https://img.shields.io/badge/version-0.2-blue)
+
 # WhiteVPN — блокировка нежелательных ресурсов на VPN-сервере
 
 [English version](README_EN.md)
@@ -95,6 +97,8 @@ blockme
 ```
 
 ### Telegram-бот
+
+Команды бота: `/start`, `/help`, `/health`
 
 Установка: `blockme` -> пункт 6
 
