@@ -24,7 +24,7 @@ def log_to_file(message):
 def setup_ipset():
     desired_maxelem = 2097152
     set_name = 'blocked_ips'
-    
+
     # Проверка существования набора
     result = subprocess.run(['sudo', 'ipset', 'list', '-t', set_name], capture_output=True, text=True)
     if result.returncode == 0:
@@ -40,7 +40,7 @@ def setup_ipset():
             subprocess.run(['sudo', 'ipset', 'flush', set_name], capture_output=True)
     else:
         subprocess.run(['sudo', 'ipset', 'create', set_name, 'hash:net', 'maxelem', str(desired_maxelem)], capture_output=True)
-    
+
     # Проверка правила iptables
     result = subprocess.run(['sudo', 'iptables', '-C', 'OUTPUT', '-m', 'set', '--match-set', set_name, 'dst', '-j', 'DROP'], capture_output=True)
     if result.returncode != 0:
@@ -49,30 +49,32 @@ def setup_ipset():
 def block_ips(ip_list):
     setup_ipset()
     new_ips = [ip.strip() for ip in ip_list if ip.strip()]
-    
+
     if not new_ips:
         message = "Список IP пуст"
         print(message)
         return
-    
+
     # Создание временного файла для пакетной загрузки IP
     temp_ipset_file = "/tmp/ipset_rules.txt"
     with open(temp_ipset_file, "w") as f:
         for ip in new_ips:
             f.write(f"add blocked_ips {ip} -exist\n")
-    
-    # Пакетное применение IP через ipset restore
-    result = subprocess.run(['sudo', 'ipset', 'restore'], input=open(temp_ipset_file, "r").read(), text=True, capture_output=True)
-    
+
+    # Пакетное применение IP через ipset restore (исправлена утечка дескриптора)
+    with open(temp_ipset_file, "r") as f:
+        ipset_data = f.read()
+    result = subprocess.run(['sudo', 'ipset', 'restore'], input=ipset_data, text=True, capture_output=True)
+
     # Перемещение временного файла в директорию логов
     shutil.move(temp_ipset_file, IPSET_RULES_FILE)
-    
+
     if result.returncode != 0:
         error_msg = f"Ошибка при добавлении IP в ipset: {result.stderr}"
         print(error_msg)
         log_to_file(error_msg)
         return
-    
+
     message = f"Добавлено {len(new_ips)} подсетей/IP в blocked_ips"
     print(message)
 
