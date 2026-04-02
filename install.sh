@@ -1,447 +1,535 @@
 #!/bin/bash
-VERSION="0.3"
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# WhiteVPN v0.5 вЂ” РЈСЃС‚Р°РЅРѕРІРєР° РєРѕРјРїРѕРЅРµРЅС‚Р° Р·Р°С‰РёС‚С‹
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
 
-# Функции для цветного вывода и логирования
-log() {
-  echo -e "\033[34m[INFO]\033[0m $1" | tee -a "$LOG_FILE"
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+VERSION="0.5"
+INSTALL_DIR="/opt/block-traffic"
+CONFIG_DIR="/etc/block-ips"
+BOT_CONFIG="${CONFIG_DIR}/bot_config.json"
+LOG="/var/log/whitevpn-install.log"
+GITHUB_RAW="https://raw.githubusercontent.com/anten-ka/whitevpn/test"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
+
+ok()   { echo -e "${GREEN}вњ“${NC} $1" | tee -a "$LOG"; }
+err()  { echo -e "${RED}вњ—${NC} $1" | tee -a "$LOG"; }
+warn() { echo -e "${YELLOW}вљ ${NC} $1" | tee -a "$LOG"; }
+info() { echo -e "${BLUE}в„№${NC} $1" | tee -a "$LOG"; }
+log()  { echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $1" | tee -a "$LOG"; }
+
+# РћРїСЂРµРґРµР»СЏРµРј РєР°С‚Р°Р»РѕРі, РѕС‚РєСѓРґР° Р·Р°РїСѓС‰РµРЅ СЃРєСЂРёРїС‚
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# РџСЂРѕРІРµСЂРєР° root
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+if [[ $EUID -ne 0 ]]; then
+    err "Р—Р°РїСѓСЃРє С‚РѕР»СЊРєРѕ РѕС‚ root (sudo bash install.sh)"
+    exit 1
+fi
+
+touch "$LOG"
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# Р‘Р°РЅРЅРµСЂ
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+clear
+cat << 'BANNER'
+
+в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+  рџ›Ў  WhiteVPN v0.5 вЂ” РЈСЃС‚Р°РЅРѕРІРєР° РєРѕРјРїРѕРЅРµРЅС‚Р° Р·Р°С‰РёС‚С‹
+в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+  рџ“‹ Рћ РєРѕРјРїРѕРЅРµРЅС‚Рµ:
+
+  РџРћ РґР»СЏ Linux Ubuntu, РєРѕС‚РѕСЂРѕРµ СЃРЅРёР·РёС‚ СЂРёСЃРєРё СЃР°РЅРєС†РёР№
+  СЃРѕ СЃС‚РѕСЂРѕРЅС‹ РѕСЂРіР°РЅРѕРІ, РєР°Рє РґР»СЏ Р°РІС‚РѕСЂР° РєР°РЅР°Р»Р°, С‚Р°Рє Рё
+  РґР»СЏ РѕР±С‹С‡РЅС‹С… РїРѕР»СЊР·РѕРІР°С‚РµР»РµР№, РєРѕРіРґР° РЅР° VPS / СЃРµСЂРІРµСЂС‹
+  СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚СЃСЏ РџРћ РґР»СЏ VPN / Proxy, РєРѕС‚РѕСЂРѕРµ
+  РїСЂРµРґРѕС‚РІСЂР°С‰Р°РµС‚ РїРµСЂРµС…РѕРґ РЅР° Р·Р°РїСЂРµС‰РµРЅРЅС‹Рµ СЃР°Р№С‚С‹ / СЂРµСЃСѓСЂСЃС‹
+  СЃРѕ СЃС‚РѕСЂРѕРЅС‹ РєРѕРЅС‚СЂРѕР»РёСЂСѓСЋС‰РёС… РѕСЂРіР°РЅРѕРІ Р Р¤.
+
+  рџЋЇ Р—Р°РґР°С‡Р° вЂ” СѓРґРѕРІР»РµС‚РІРѕСЂРёС‚СЊ 3 СЃС‚РѕСЂРѕРЅС‹:
+  вЂў РђРІС‚РѕСЂР° РєР°РЅР°Р»Р° вЂ” СЂР°СЃСЃРєР°Р·С‹РІР°РµС‚ Рѕ СЃРµС‚РµРІС‹С… С‚РµС…РЅРѕР»РѕРіРёСЏС…
+  вЂў РџРѕР»СЊР·РѕРІР°С‚РµР»СЏ вЂ” СЃР°Рј РїСЂРёРЅРёРјР°РµС‚ СЂРµС€РµРЅРёРµ Рѕ СЂР°Р±РѕС‚Рµ
+  вЂў РљРѕРЅС‚СЂРѕР»РёСЂСѓСЋС‰РёРµ РѕСЂРіР°РЅС‹ вЂ” РџРћ РїРѕРјРѕРіР°РµС‚ РЅРµ РЅР°СЂСѓС€Р°С‚СЊ Р·Р°РєРѕРЅ
+
+  вљ™пёЏ РљР°Рє СЂР°Р±РѕС‚Р°РµС‚:
+  РЎРєР°С‡РёРІР°РµС‚ РїСѓР±Р»РёС‡РЅС‹Рµ СЃРїРёСЃРєРё Р·Р°РїСЂРµС‰С‘РЅРЅС‹С… СЂРµСЃСѓСЂСЃРѕРІ,
+  РґРѕР±Р°РІР»СЏРµС‚ РїРѕРґСЃРµС‚Рё РІ iptables (ipset) Рё Р±Р»РѕРєРёСЂСѓРµС‚
+  РґРѕРјРµРЅС‹ С‡РµСЂРµР· Unbound DNS.
+
+  рџ¤– Telegram-Р±РѕС‚ РґР»СЏ СѓРїСЂР°РІР»РµРЅРёСЏ С…РѕС‚СЊ СЃ С‚РµР»РµС„РѕРЅР° вЂ”
+  РІРєР»СЋС‡РµРЅРёРµ/РѕС‚РєР»СЋС‡РµРЅРёРµ Р·Р° 3 СЃРµРєСѓРЅРґС‹.
+
+  вљ пёЏ Р РµС€РµРЅРёРµ РЅРµ РіР°СЂР°РЅС‚РёСЂСѓРµС‚ 100% Р·Р°С‰РёС‰С‘РЅРЅРѕСЃС‚Рё Рё
+  РїРѕСЃС‚Р°РІР»СЏРµС‚СЃСЏ В«РєР°Рє РµСЃС‚СЊВ».
+
+  рџ“ў Р РµС€РµРЅРёРµ Рѕ СЂР°Р±РѕС‚РѕСЃРїРѕСЃРѕР±РЅРѕСЃС‚Рё РїСЂРёРЅРёРјР°С‚СЊ РІР°Рј.
+в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+BANNER
+sleep 1
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 1. РћР±РЅР°СЂСѓР¶РµРЅРёРµ СЃС‚Р°СЂРѕР№ РІРµСЂСЃРёРё
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+SAVED_TOKEN=""
+SAVED_ADMIN=""
+
+detect_old() {
+    local found=0
+    [[ -d "$INSTALL_DIR" ]] && found=1
+    [[ -f /usr/local/bin/blockme ]] && found=1
+
+    if [[ $found -eq 0 ]]; then
+        info "РџСЂРµРґС‹РґСѓС‰Р°СЏ СѓСЃС‚Р°РЅРѕРІРєР° РЅРµ РЅР°Р№РґРµРЅР°"
+        return
+    fi
+
+    warn "рџ”Ќ РћР±РЅР°СЂСѓР¶РµРЅР° РїСЂРµРґС‹РґСѓС‰Р°СЏ РІРµСЂСЃРёСЏ WhiteVPN!"
+
+    # РР·РІР»РµС‡СЊ С‚РѕРєРµРЅ Рё admin_id РёР· РєРѕРЅС„РёРіР°
+    if [[ -f "$BOT_CONFIG" ]]; then
+        SAVED_TOKEN=$(python3 -c "
+import json,sys
+try:
+    d=json.load(open('$BOT_CONFIG'))
+    print(d.get('BOT_TOKEN',d.get('token','')))
+except: pass
+" 2>/dev/null || true)
+        SAVED_ADMIN=$(python3 -c "
+import json,sys
+try:
+    d=json.load(open('$BOT_CONFIG'))
+    print(d.get('ADMIN_ID',d.get('admin_id','')))
+except: pass
+" 2>/dev/null || true)
+        [[ -n "$SAVED_TOKEN" ]] && ok "РўРѕРєРµРЅ Р±РѕС‚Р° РёР·РІР»РµС‡С‘РЅ"
+        [[ -n "$SAVED_ADMIN" ]] && ok "Admin ID РёР·РІР»РµС‡С‘РЅ: $SAVED_ADMIN"
+    fi
+
+    echo ""
+    read -rp "  РЈРґР°Р»РёС‚СЊ СЃС‚Р°СЂСѓСЋ РІРµСЂСЃРёСЋ Рё СѓСЃС‚Р°РЅРѕРІРёС‚СЊ v${VERSION}? (y/n): "
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        warn "РЈСЃС‚Р°РЅРѕРІРєР° РѕС‚РјРµРЅРµРЅР°."
+        exit 0
+    fi
+
+    # РћСЃС‚Р°РЅРѕРІРёС‚СЊ СЃС‚Р°СЂС‹Рµ СЃРµСЂРІРёСЃС‹
+    for svc in block-ips-bot whitevpn-bot whitevpn-update; do
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+    done
+    for timer in whitevpn-update; do
+        systemctl stop "${timer}.timer" 2>/dev/null || true
+        systemctl disable "${timer}.timer" 2>/dev/null || true
+    done
+    rm -f /etc/systemd/system/whitevpn-*.service /etc/systemd/system/whitevpn-*.timer
+    rm -f /etc/systemd/system/block-ips-bot.service
+    systemctl daemon-reload 2>/dev/null || true
+
+    # РЈРґР°Р»РёС‚СЊ СЃС‚Р°СЂСѓСЋ СѓСЃС‚Р°РЅРѕРІРєСѓ (РєРѕРЅС„РёРі СЃРѕС…СЂР°РЅСЏРµРј)
+    rm -rf "$INSTALL_DIR"
+    rm -f /usr/local/bin/blockme
+    ok "РЎС‚Р°СЂР°СЏ РІРµСЂСЃРёСЏ СѓРґР°Р»РµРЅР°"
 }
-success() {
-  echo -e "\033[32m[SUCCESS]\033[0m $1" | tee -a "$LOG_FILE"
+
+detect_old
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 2. РћР±РЅР°СЂСѓР¶РµРЅРёРµ 3x-ui Рё Docker
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+XUI_FOUND=0
+DOCKER_FOUND=0
+DOCKER_NAMES=()
+
+# 3x-ui
+if systemctl is-active --quiet x-ui 2>/dev/null || [[ -d /usr/local/x-ui ]]; then
+    XUI_FOUND=1
+    echo -e "  ${GREEN}рџ–Ґ  РћР±РЅР°СЂСѓР¶РµРЅР° РїР°РЅРµР»СЊ 3x-ui!${NC}"
+    echo -e "  ${GREEN}вњ… РќР° РїР°РЅРµР»СЊ Р±СѓРґРµС‚ РІРєР»СЋС‡РµРЅР° Р·Р°С‰РёС‚Р°${NC}"
+    echo ""
+fi
+
+# Docker РєРѕРЅС‚РµР№РЅРµСЂС‹
+if command -v docker &>/dev/null; then
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local_name=$(echo "$line" | awk '{print $1}')
+        local_image=$(echo "$line" | awk '{print $2}')
+        if [[ "$local_name$local_image" =~ amnezia|wireguard|openvpn|vpn ]]; then
+            DOCKER_NAMES+=("$local_name")
+            DOCKER_FOUND=1
+        fi
+    done < <(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null)
+
+    if [[ $DOCKER_FOUND -eq 1 ]]; then
+        echo -e "  ${GREEN}рџђі РћР±РЅР°СЂСѓР¶РµРЅС‹ Docker-РєРѕРЅС‚РµР№РЅРµСЂС‹:${NC}"
+        for n in "${DOCKER_NAMES[@]}"; do
+            echo -e "  ${GREEN}  вЂў $n вњ…${NC}"
+        done
+        echo -e "  ${GREEN}вњ… РќР° РєРѕРЅС‚РµР№РЅРµСЂС‹ Р±СѓРґРµС‚ РІРєР»СЋС‡РµРЅР° Р·Р°С‰РёС‚Р°${NC}"
+        echo ""
+    fi
+fi
+
+sleep 1
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 3. РЈСЃС‚Р°РЅРѕРІРєР° Р·Р°РІРёСЃРёРјРѕСЃС‚РµР№
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+log "РЈСЃС‚Р°РЅРѕРІРєР° Р·Р°РІРёСЃРёРјРѕСЃС‚РµР№..."
+apt-get update -qq >> "$LOG" 2>&1 || true
+
+PKGS=(python3 python3-venv python3-pip iptables ipset unbound dnsutils dos2unix curl wget iptables-persistent)
+for pkg in "${PKGS[@]}"; do
+    if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+        ok "$pkg СѓР¶Рµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ"
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >> "$LOG" 2>&1 && ok "$pkg СѓСЃС‚Р°РЅРѕРІР»РµРЅ" || warn "$pkg РЅРµ СѓРґР°Р»РѕСЃСЊ"
+    fi
+done
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 4. РЎРѕР·РґР°РЅРёРµ РєР°С‚Р°Р»РѕРіРѕРІ
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+log "РЎРѕР·РґР°РЅРёРµ РєР°С‚Р°Р»РѕРіРѕРІ..."
+mkdir -p "$INSTALL_DIR"/{whitelist,logs,blocked-ips,blocked-domains}
+mkdir -p "$CONFIG_DIR"
+ok "РљР°С‚Р°Р»РѕРіРё СЃРѕР·РґР°РЅС‹"
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 5. РљРѕРїРёСЂРѕРІР°РЅРёРµ / Р·Р°РіСЂСѓР·РєР° С„Р°Р№Р»РѕРІ РїСЂРѕРµРєС‚Р°
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+log "РљРѕРїРёСЂРѕРІР°РЅРёРµ С„Р°Р№Р»РѕРІ РїСЂРѕРµРєС‚Р°..."
+
+copy_or_download() {
+    local src="$1" dst="$2" remote="$3"
+    if [[ -f "$SCRIPT_DIR/$src" ]]; then
+        cp "$SCRIPT_DIR/$src" "$dst"
+    else
+        wget -q -O "$dst" "${GITHUB_RAW}/${remote:-$src}" || { err "РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РіСЂСѓР·РёС‚СЊ $src"; return 1; }
+    fi
+    ok "  $src"
 }
-error() {
-  echo -e "\033[31m[ERROR]\033[0m $1" | tee -a "$LOG_FILE"
-}
 
-# Определение полного пути к директории, в которой находится install.sh
-SCRIPT_DIR=$(realpath "$(dirname "$0")")
-SYSTEM_INSTALL_DIR="/opt/block-traffic"
-INSTALL_DIR="$SYSTEM_INSTALL_DIR/blocked-ips"
-LOG_DIR="$SYSTEM_INSTALL_DIR/logs"
-LOG_FILE="$LOG_DIR/install-$(date +%F_%H-%M-%S).log"
+# РћСЃРЅРѕРІРЅС‹Рµ С„Р°Р№Р»С‹
+copy_or_download "bot.py" "$INSTALL_DIR/bot.py" "bot.py"
+copy_or_download "manage.sh" "$INSTALL_DIR/manage.sh" "manage.sh"
+copy_or_download "docker_rules.sh" "$INSTALL_DIR/docker_rules.sh" "docker_rules.sh"
+copy_or_download "VERSION" "$INSTALL_DIR/VERSION" "VERSION"
 
-# Создание системной директории и копирование файлов
-log "Копирование файлов в $SYSTEM_INSTALL_DIR..."
-sudo mkdir -p "$SYSTEM_INSTALL_DIR" "$INSTALL_DIR" "$LOG_DIR" "$INSTALL_DIR/blocked-domains"
-sudo cp -r "$SCRIPT_DIR"/* "$SYSTEM_INSTALL_DIR/" 2>> "$LOG_FILE"
-if [ -d "$SCRIPT_DIR/blocked-domains" ]; then
-  sudo cp -r "$SCRIPT_DIR/blocked-domains" "$INSTALL_DIR/" 2>> "$LOG_FILE"
-  sudo chmod -R 755 "$INSTALL_DIR/blocked-domains"
-else
-  error "Папка blocked-domains не найдена в $SCRIPT_DIR."
-  exit 1
-fi
-sudo chmod -R 755 "$SYSTEM_INSTALL_DIR"
-sudo chmod 755 "$LOG_DIR"
+# РЎРєСЂРёРїС‚С‹ Р±Р»РѕРєРёСЂРѕРІРєРё
+copy_or_download "blocked-ips/block_ips.py" "$INSTALL_DIR/blocked-ips/block_ips.py" "blocked-ips/block_ips.py"
+copy_or_download "blocked-domains/block_domains.py" "$INSTALL_DIR/blocked-domains/block_domains.py" "blocked-domains/block_domains.py"
 
-# Проверка, существует ли директория blocked-ips
-if [ ! -d "$INSTALL_DIR" ]; then
-  error "Директория $INSTALL_DIR не создана."
-  exit 1
-fi
+# Р‘РµР»С‹Р№ СЃРїРёСЃРѕРє
+for f in telegram.txt youtube.txt custom.txt whitelist.conf; do
+    copy_or_download "whitelist/$f" "$INSTALL_DIR/whitelist/$f" "whitelist/$f"
+done
 
-# Проверка, существует ли файл block_domains.py
-if [ ! -f "$INSTALL_DIR/blocked-domains/block_domains.py" ]; then
-  error "Файл $INSTALL_DIR/blocked-domains/block_domains.py не найден."
-  exit 1
-fi
+chmod +x "$INSTALL_DIR/manage.sh" "$INSTALL_DIR/docker_rules.sh"
+dos2unix "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/*.py 2>/dev/null || true
+dos2unix "$INSTALL_DIR"/blocked-*/*.py 2>/dev/null || true
 
-# Проверка, существует ли файл block_ips.py
-if [ ! -f "$INSTALL_DIR/block_ips.py" ]; then
-  error "Файл $INSTALL_DIR/block_ips.py не найден."
-  exit 1
-fi
+ok "Р¤Р°Р№Р»С‹ РїСЂРѕРµРєС‚Р° СЃРєРѕРїРёСЂРѕРІР°РЅС‹"
 
-# Создание конфигурационного файла
-log "Создание конфигурации в /etc/block-ips/config..."
-sudo mkdir -p /etc/block-ips
-echo "INSTALL_DIR=$INSTALL_DIR" | sudo tee /etc/block-ips/config > /dev/null
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 6. Python venv
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
 
-# Проверка и удаление существующего сервиса block-ips
-if systemctl list-units --full -all | grep -Fq "block-ips.service"; then
-  log "Отключение и удаление существующего сервиса block-ips..."
-  if [ -f /etc/systemd/system/block-ips.service ]; then
-    sudo systemctl stop block-ips.service
-    sudo systemctl disable block-ips.service
-    sudo rm -f /etc/systemd/system/block-ips.service
-    log "[INFO] Существующий сервис block-ips удалён"
-  else
-    log "[INFO] Сервис block-ips не найден, пропускаем удаление"
-  fi
+log "РЎРѕР·РґР°РЅРёРµ Python venv..."
+python3 -m venv "$INSTALL_DIR/venv" >> "$LOG" 2>&1
+"$INSTALL_DIR/venv/bin/pip" install --upgrade pip >> "$LOG" 2>&1
+"$INSTALL_DIR/venv/bin/pip" install aiogram==3.5.0 requests >> "$LOG" 2>&1
+ok "Python venv (aiogram 3.5.0, requests)"
 
-fi
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 7. РќР°СЃС‚СЂРѕР№РєР° Unbound DNS
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
 
-# Проверка и удаление существующего сервиса block-domains
-if systemctl list-units --full -all | grep -Fq "block-domains.service"; then
-  log "Отключение и удаление существующего сервиса block-domains..."
+log "РќР°СЃС‚СЂРѕР№РєР° Unbound DNS..."
 
-  if [ -f /etc/systemd/system/block-domains.service ]; then
-    sudo systemctl stop block-domains.service
-    sudo systemctl disable block-domains.service
-    sudo rm -f /etc/systemd/system/block-domains.service
-    log "[INFO] Существующий сервис block-domains удалён"
-  else
-    log "[INFO] Сервис block-domains не найден, пропускаем удаление"
-  fi
+systemctl stop systemd-resolved 2>/dev/null || true
+systemctl disable systemd-resolved 2>/dev/null || true
 
-fi
+# Р‘СЌРєР°Рї
+[[ -f /etc/unbound/unbound.conf ]] && cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.bak.$(date +%s)
 
-# Проверка версии Python и установка нужного пакета venv
-log "Проверка версии Python..."
-PYTHON_VERSION=$(python3 --version 2>> "$LOG_FILE" | awk '{print $2}' | cut -d'.' -f1,2)
-if [ -z "$PYTHON_VERSION" ]; then
-  error "Не удалось определить версию Python. Проверьте $LOG_FILE."
-  exit 1
-fi
-log "Обнаружена версия Python: $PYTHON_VERSION"
-
-VENV_PACKAGE="python${PYTHON_VERSION}-venv"
-log "Установка пакетов (python3, $VENV_PACKAGE, iptables, ipset, unbound, dnsutils)..."
-sudo apt update -qq >> "$LOG_FILE" 2>&1
-sudo apt install -y -qq python3 "$VENV_PACKAGE" iptables ipset unbound dnsutils >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось установить пакеты (python3, $VENV_PACKAGE, iptables, ipset, unbound, dnsutils). Проверьте $LOG_FILE."
-  exit 1
-fi
-
-# Отключение и остановка systemd-resolved
-log "Остановка и отключение systemd-resolved..."
-sudo systemctl stop systemd-resolved >> "$LOG_FILE" 2>&1
-sudo systemctl disable systemd-resolved >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось остановить или отключить systemd-resolved. Проверьте $LOG_FILE."
-  exit 1
-fi
-
-# Настройка Unbound
-log "Настройка Unbound..."
-sudo bash -c 'cat > /etc/unbound/unbound.conf <<EOF
+cat > /etc/unbound/unbound.conf << 'UNBCONF'
 server:
     verbosity: 1
-    interface: 0.0.0.0
-    access-control: 127.0.0.0/8 allow
+    port: 53
     do-ip4: yes
     do-ip6: no
     do-udp: yes
     do-tcp: yes
-    harden-dnssec-stripped: no
-    chroot: ""
-    cache-max-ttl: 86400
-    cache-min-ttl: 3600
+    interface: 127.0.0.1
+    access-control: 127.0.0.0/8 allow
+    access-control: 0.0.0.0/0 refuse
+    num-threads: 2
+    msg-cache-size: 4m
+    rrset-cache-size: 8m
+    include: "/etc/unbound/blocked-domains.conf"
 
-include: "/etc/unbound/blocked-domains.conf"
-EOF'
+forward-zone:
+    name: "."
+    forward-addr: 8.8.8.8
+    forward-addr: 8.8.4.4
+    forward-addr: 1.1.1.1
+UNBCONF
 
-# Убедиться, что /etc/unbound/blocked-domains.conf существует
-log "Создание /etc/unbound/blocked-domains.conf, если не существует..."
-sudo touch /etc/unbound/blocked-domains.conf >> "$LOG_FILE" 2>&1
-sudo chmod 644 /etc/unbound/blocked-domains.conf >> "$LOG_FILE" 2>&1
-sudo chown unbound:unbound /etc/unbound/blocked-domains.conf >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось создать или настроить /etc/unbound/blocked-domains.conf. Проверьте $LOG_FILE."
-  exit 1
+touch /etc/unbound/blocked-domains.conf
+chown -R unbound:unbound /etc/unbound 2>/dev/null || true
+
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
+
+systemctl restart unbound
+systemctl enable unbound
+ok "Unbound DNS РЅР°СЃС‚СЂРѕРµРЅ"
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 8. ipset + iptables
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+log "РќР°СЃС‚СЂРѕР№РєР° ipset Рё iptables..."
+
+ipset create blocked_ips hash:net maxelem 2097152 2>/dev/null || ipset flush blocked_ips 2>/dev/null || true
+
+# РџСЂРѕРІРµСЂСЏРµРј Рё РґРѕР±Р°РІР»СЏРµРј LOG-РїСЂР°РІРёР»Рѕ
+if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null; then
+    iptables -A OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4
 fi
 
-# Проверка синтаксиса конфигурации Unbound
-log "Проверка синтаксиса конфигурации Unbound..."
-sudo unbound-checkconf >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Ошибка в конфигурации Unbound. Проверьте $LOG_FILE."
-  exit 1
+# РџСЂРѕРІРµСЂСЏРµРј Рё РґРѕР±Р°РІР»СЏРµРј DROP-РїСЂР°РІРёР»Рѕ
+if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null; then
+    iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
 fi
 
-# Запуск и включение Unbound
-log "Запуск и включение Unbound..."
-sudo systemctl enable unbound >> "$LOG_FILE" 2>&1
-sudo systemctl start unbound >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось запустить Unbound. Проверьте $LOG_FILE."
-  exit 1
+# Docker Р·Р°С‰РёС‚Р°
+if [[ $DOCKER_FOUND -eq 1 ]] && [[ -f "$INSTALL_DIR/docker_rules.sh" ]]; then
+    bash "$INSTALL_DIR/docker_rules.sh" enable >> "$LOG" 2>&1 || true
+    ok "Docker-Р·Р°С‰РёС‚Р° РІРєР»СЋС‡РµРЅР°"
 fi
 
-log "Проверка, что Unbound слушает на порту 53..."
-if sudo ss -tuln | grep -q ":53 "; then
-  success "Unbound слушает на порту 53."
-else
-  error "Unbound не слушает на порту 53. Проверьте конфигурацию."
-  exit 1
-fi
+# РЎРѕС…СЂР°РЅСЏРµРј РїСЂР°РІРёР»Р°
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
-# Проверка DNS-разрешения через Unbound
-log "Проверка DNS-разрешения через Unbound..."
-if [ -n "$(dig @127.0.0.1 google.com +short)" ]; then
-  success "DNS-разрешение работает корректно."
-else
-  error "DNS-разрешение не работает корректно. Проверьте конфигурацию Unbound."
-  exit 1
-fi
-
-# Настройка NetworkManager, если установлен
-if [ -f /etc/NetworkManager/NetworkManager.conf ]; then
-  log "Настройка NetworkManager для использования Unbound..."
-  sudo bash -c 'echo "[main]\ndns=none" > /etc/NetworkManager/conf.d/no-dns.conf'
-  sudo systemctl restart NetworkManager >> "$LOG_FILE" 2>&1
-  if [ $? -ne 0 ]; then
-    error "Не удалось перезапустить NetworkManager. Проверьте $LOG_FILE."
-    exit 1
-  fi
-fi
-
-# Разрешение исходящего трафика на порт 53, если ufw активен
-if sudo ufw status | grep -q "Status: active"; then
-  log "Разрешение исходящего трафика на порт 53 через ufw..."
-  sudo ufw allow out to any port 53 proto udp >> "$LOG_FILE" 2>&1
-  sudo ufw allow out to any port 53 proto tcp >> "$LOG_FILE" 2>&1
-  if [ $? -ne 0 ]; then
-    error "Не удалось разрешить исходящий трафик на порт 53. Проверьте $LOG_FILE."
-    exit 1
-  fi
-fi
-
-# Настройка /etc/resolv.conf на использование Unbound
-log "Настройка /etc/resolv.conf на использование Unbound..."
-if [ -L /etc/resolv.conf ]; then
-  log "Удаление символической ссылки /etc/resolv.conf..."
-  sudo rm /etc/resolv.conf >> "$LOG_FILE" 2>&1
-fi
-sudo bash -c 'echo "nameserver 127.0.0.1" > /etc/resolv.conf'
-
-# Создание виртуального окружения
-log "Создание виртуального окружения в $INSTALL_DIR/venv..."
-cd "$INSTALL_DIR" || { error "Не удалось перейти в $INSTALL_DIR"; exit 1; }
-python3 -m venv "$INSTALL_DIR/venv" >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось создать виртуальное окружение. Проверьте $LOG_FILE."
-  exit 1
-fi
-
-source "$INSTALL_DIR/venv/bin/activate"
-pip install -q requests >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось установить библиотеку requests. Проверьте $LOG_FILE."
-  exit 1
-fi
-
-# Создание systemd сервиса для block-ips
-log "Настройка systemd сервиса block-ips..."
-cat << EOF | sudo tee /etc/systemd/system/block-ips.service > /dev/null
+# ipset persist
+cat > /etc/systemd/system/ipset-restore.service << 'IPSETSERVICE'
 [Unit]
-Description=Block IPs from antifilter.network
-After=network.target
+Description=Restore ipset rules
+Before=iptables-restore.service
 
 [Service]
 Type=oneshot
-ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/block_ips.py
-WorkingDirectory=$INSTALL_DIR
-StandardOutput=journal
-StandardError=journal
+ExecStart=/sbin/ipset restore -f /etc/ipset.rules
+ExecStop=/sbin/ipset save -f /etc/ipset.rules
 
 [Install]
 WantedBy=multi-user.target
-EOF
-if [ $? -ne 0 ]; then
-  error "Не удалось создать файл сервиса block-ips.service. Проверьте $LOG_FILE."
-  exit 1
-fi
+IPSETSERVICE
 
-# Создание systemd таймера для block-ips
-log "Настройка systemd таймера block-ips..."
-cat << EOF | sudo tee /etc/systemd/system/block-ips.timer > /dev/null
-[Unit]
-Description=Run block-ips.service daily at midnight
-Requires=block-ips.service
+ipset save > /etc/ipset.rules 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable ipset-restore 2>/dev/null || true
 
-[Timer]
-OnCalendar=*-*-* 00:00:00
-Persistent=true
-Unit=block-ips.service
+ok "ipset + iptables РЅР°СЃС‚СЂРѕРµРЅС‹"
 
-[Install]
-WantedBy=timers.target
-EOF
-if [ $? -ne 0 ]; then
-  error "Не удалось создать файл таймера block-ips.timer. Проверьте $LOG_FILE."
-  exit 1
-fi
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 9. РќР°СЃС‚СЂРѕР№РєР° Р±РѕС‚Р° (С‚РѕРєРµРЅ + admin_id)
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
 
-# Создание systemd сервиса для block-domains
-log "Настройка systemd сервиса block-domains..."
-cat << EOF | sudo tee /etc/systemd/system/block-domains.service > /dev/null
-[Unit]
-Description=Update blocked domains daily
-After=network.target
+log "РќР°СЃС‚СЂРѕР№РєР° Telegram-Р±РѕС‚Р°..."
 
-[Service]
-Type=oneshot
-ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/blocked-domains/block_domains.py
-WorkingDirectory=$INSTALL_DIR
-StandardOutput=journal
-StandardError=journal
+BOT_TOKEN_VAL=""
+ADMIN_ID_VAL=""
 
-[Install]
-WantedBy=multi-user.target
-EOF
-if [ $? -ne 0 ]; then
-  error "Не удалось создать файл сервиса block-domains.service. Проверьте $LOG_FILE."
-  exit 1
-fi
-
-# Создание systemd таймера для block-domains
-log "Настройка systemd таймера block-domains..."
-cat << EOF | sudo tee /etc/systemd/system/block-domains.timer > /dev/null
-[Unit]
-Description=Run block-domains.service daily at midnight
-Requires=block-domains.service
-
-[Timer]
-OnCalendar=*-*-* 00:00:00
-Persistent=true
-Unit=block-domains.service
-
-[Install]
-WantedBy=timers.target
-EOF
-if [ $? -ne 0 ]; then
-  error "Не удалось создать файл таймера block-domains.timer. Проверьте $LOG_FILE."
-  exit 1
-fi
-
-# Копирование manage.sh в /usr/local/bin/blockme
-log "Установка команды blockme..."
-sudo cp "$SYSTEM_INSTALL_DIR/manage.sh" /usr/local/bin/blockme 2>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
-  error "Не удалось скопировать manage.sh в /usr/local/bin/blockme. Проверьте $LOG_FILE."
-  exit 1
-fi
-sudo chmod +x /usr/local/bin/blockme 2>> "$LOG_FILE"
-
-# Копирование docker_rules.sh
-if [ -f "$SCRIPT_DIR/docker_rules.sh" ]; then
-  log "Установка docker_rules.sh..."
-  sudo cp "$SCRIPT_DIR/docker_rules.sh" "$SYSTEM_INSTALL_DIR/docker_rules.sh" 2>> "$LOG_FILE"
-  sudo chmod +x "$SYSTEM_INSTALL_DIR/docker_rules.sh" 2>> "$LOG_FILE"
-  success "docker_rules.sh установлен."
-fi
-
-# Настройка и запуск сервисов и таймеров
-log "Запуск и включение сервисов и таймеров..."
-sudo systemctl daemon-reload >> "$LOG_FILE" 2>&1
-sudo systemctl enable block-ips.timer >> "$LOG_FILE" 2>&1
-sudo systemctl start block-ips.timer >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось включить или запустить block-ips.timer. Проверьте $LOG_FILE."
-  exit 1
-fi
-sudo systemctl enable block-domains.timer >> "$LOG_FILE" 2>&1
-sudo systemctl start block-domains.timer >> "$LOG_FILE" 2>&1
-if [ $? -ne 0 ]; then
-  error "Не удалось включить или запустить block-domains.timer. Проверьте $LOG_FILE."
-  exit 1
-fi
-
-# Проверка статуса таймеров
-log "Проверка статуса таймеров..."
-if systemctl is-active --quiet block-ips.timer; then
-  success "Таймер block-ips.timer активен и работает."
-else
-  error "Таймер block-ips.timer не активен."
-  log "Мини-диагностика:"
-  sudo systemctl status block-ips.timer --no-pager | tee -a "$LOG_FILE"
-  error "Проверьте $LOG_FILE или выполните 'sudo systemctl status block-ips.timer' для деталей."
-  exit 1
-fi
-if systemctl is-active --quiet block-domains.timer; then
-  success "Таймер block-domains.timer активен и работает."
-else
-  error "Таймер block-domains.timer не активен."
-  log "Мини-диагностика:"
-  sudo systemctl status block-domains.timer --no-pager | tee -a "$LOG_FILE"
-  error "Проверьте $LOG_FILE или выполните 'sudo systemctl status block-domains.timer' для деталей."
-  exit 1
-fi
-
-success "Установка завершена."
-
-# Вывод сводной информации
-echo -e "\n\033[1mСводная информация:\033[0m" | tee -a "$LOG_FILE"
-echo "  - Скрипт IP: $INSTALL_DIR/block_ips.py" | tee -a "$LOG_FILE"
-echo "  - Скрипт доменов: $INSTALL_DIR/blocked-domains/block_domains.py" | tee -a "$LOG_FILE"
-echo "  - Виртуальное окружение: $INSTALL_DIR/venv" | tee -a "$LOG_FILE"
-echo "  - Сервис IP: block-ips.service" | tee -a "$LOG_FILE"
-echo "  - Таймер IP: block-ips.timer" | tee -a "$LOG_FILE"
-echo "  - Сервис доменов: block-domains.service" | tee -a "$LOG_FILE"
-echo "  - Таймер доменов: block-domains.timer" | tee -a "$LOG_FILE"
-echo "  - Команда blockme: /usr/local/bin/blockme" | tee -a "$LOG_FILE"
-echo "  - Лог установки: $LOG_FILE" | tee -a "$LOG_FILE"
-
-echo -e "\n\033[1mИнструкции:\033[0m" | tee -a "$LOG_FILE"
-echo "  - Запустите 'blockme' для открытия меню управления" | tee -a "$LOG_FILE"
-echo "  - Проверить статус таймеров: sudo systemctl status block-ips.timer block-domains.timer" | tee -a "$LOG_FILE"
-echo "  - Просмотреть логи: sudo journalctl -u block-ips.service -u block-domains.service" | tee -a "$LOG_FILE"
-echo "  - Перезапустить таймеры: sudo systemctl restart block-ips.timer block-domains.timer" | tee -a "$LOG_FILE"
-
-# === Docker-интеграция ===
-DOCKER_RULES="$SYSTEM_INSTALL_DIR/docker_rules.sh"
-
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-  echo "" | tee -a "$LOG_FILE"
-  log "Docker обнаружен на сервере."
-  echo ""
-
-  # Автосканирование
-  bash "$DOCKER_RULES" scan 2>&1 | tee -a "$LOG_FILE"
-
-  echo ""
-  log "Хотите автоматически настроить защиту VPN-контейнеров?"
-  log "(iptables + DNS + Unbound — всё за один шаг)"
-  echo ""
-  read -rp "  Настроить автоматически? (y/n): " setup_docker
-
-  if [[ "$setup_docker" =~ ^[yYдД] ]]; then
-    bash "$DOCKER_RULES" auto-setup 2>&1 | tee -a "$LOG_FILE"
-
-    if [ $? -eq 0 ]; then
-      # Создание systemd-сервиса для восстановления правил после рестарта
-      log "Создание сервиса восстановления Docker-правил..."
-      cat << DEOF | sudo tee /etc/systemd/system/docker-block-restore.service > /dev/null
-[Unit]
-Description=Restore WhiteVPN Docker blocking rules after Docker restart
-After=docker.service block-ips.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-ExecStartPre=/bin/bash -c 'until docker info &>/dev/null; do sleep 2; done'
-ExecStart=$DOCKER_RULES enable
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-DEOF
-      sudo systemctl daemon-reload >> "$LOG_FILE" 2>&1
-      sudo systemctl enable docker-block-restore.service >> "$LOG_FILE" 2>&1
-      success "Сервис docker-block-restore.service создан (автовосстановление)."
+if [[ -n "$SAVED_TOKEN" ]] && [[ -n "$SAVED_ADMIN" ]]; then
+    echo ""
+    echo -e "  ${GREEN}РќР°Р№РґРµРЅС‹ РґР°РЅРЅС‹Рµ РѕС‚ РїСЂРµРґС‹РґСѓС‰РµР№ РІРµСЂСЃРёРё:${NC}"
+    echo -e "  РўРѕРєРµРЅ: ${SAVED_TOKEN:0:15}..."
+    echo -e "  Admin: $SAVED_ADMIN"
+    echo ""
+    read -rp "  РСЃРїРѕР»СЊР·РѕРІР°С‚СЊ СЃРѕС…СЂР°РЅС‘РЅРЅС‹Рµ РґР°РЅРЅС‹Рµ? (y/n): "
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        BOT_TOKEN_VAL="$SAVED_TOKEN"
+        ADMIN_ID_VAL="$SAVED_ADMIN"
     fi
-  else
-    log "Docker-блокировка пропущена. Настроить позже: blockme > пункт 5"
-  fi
-else
-  log "Docker не обнаружен. Docker-блокировка пропущена."
 fi
 
-echo -e "\nБольшой выбор стран, хорошее железо, быстрая поддержка,"
-echo "VPS хостинг, который работает со скидками до -60%:"
-echo "==============================================================="
-echo "https://vk.cc/ct29NQ"
-echo "https://vk.cc/ct29NQ"
-echo "https://vk.cc/ct29NQ"
+if [[ -z "$BOT_TOKEN_VAL" ]]; then
+    echo ""
+    echo -e "  ${YELLOW}Р’РІРµРґРёС‚Рµ РґР°РЅРЅС‹Рµ Telegram-Р±РѕС‚Р°:${NC}"
+    echo -e "  (РЎРѕР·РґР°Р№С‚Рµ Р±РѕС‚Р° С‡РµСЂРµР· @BotFather)"
+    echo ""
+    read -p "  Bot Token: " BOT_TOKEN_VAL
+    read -p "  Admin ID (РІР°С€ Telegram ID): " ADMIN_ID_VAL
+    echo ""
+fi
+
+if [[ -n "$BOT_TOKEN_VAL" ]] && [[ -n "$ADMIN_ID_VAL" ]]; then
+    cat > "$BOT_CONFIG" << BOTCFG
+{
+  "BOT_TOKEN": "$BOT_TOKEN_VAL",
+  "ADMIN_ID": $ADMIN_ID_VAL
+}
+BOTCFG
+    chmod 600 "$BOT_CONFIG"
+    ok "РљРѕРЅС„РёРіСѓСЂР°С†РёСЏ Р±РѕС‚Р° СЃРѕС…СЂР°РЅРµРЅР°"
+else
+    warn "Р‘РѕС‚ РЅРµ РЅР°СЃС‚СЂРѕРµРЅ (РЅРµС‚ С‚РѕРєРµРЅР°). РќР°СЃС‚СЂРѕР№С‚Рµ РІСЂСѓС‡РЅСѓСЋ: $BOT_CONFIG"
+fi
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 10. Systemd-СЃРµСЂРІРёСЃС‹
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+log "РЎРѕР·РґР°РЅРёРµ systemd-СЃРµСЂРІРёСЃРѕРІ..."
+
+# Р‘РѕС‚
+cat > /etc/systemd/system/block-ips-bot.service << BOTSVC
+[Unit]
+Description=WhiteVPN Telegram Bot v${VERSION}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/bot.py
+Restart=always
+RestartSec=10
+WorkingDirectory=${INSTALL_DIR}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+BOTSVC
+
+# РћР±РЅРѕРІР»РµРЅРёРµ СЃРїРёСЃРєРѕРІ (one-shot) вЂ” wrapper-СЃРєСЂРёРїС‚ РґР»СЏ РґРІСѓС… РєРѕРјР°РЅРґ
+cat > "${INSTALL_DIR}/update_all.sh" << 'UPDSH'
+#!/bin/bash
+set -e
+INSTALL_DIR="/opt/block-traffic"
+"$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/blocked-ips/block_ips.py"
+"$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/blocked-domains/block_domains.py"
+UPDSH
+chmod +x "${INSTALL_DIR}/update_all.sh"
+
+cat > /etc/systemd/system/whitevpn-update.service << UPDSVC
+[Unit]
+Description=WhiteVPN List Update
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${INSTALL_DIR}/update_all.sh
+WorkingDirectory=${INSTALL_DIR}
+UPDSVC
+
+# РўР°Р№РјРµСЂ РѕР±РЅРѕРІР»РµРЅРёСЏ (РєР°Р¶РґС‹Рµ 6 С‡Р°СЃРѕРІ)
+cat > /etc/systemd/system/whitevpn-update.timer << UPDTMR
+[Unit]
+Description=WhiteVPN Update Timer
+Requires=whitevpn-update.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UPDTMR
+
+systemctl daemon-reload
+
+# Р—Р°РїСѓСЃРєР°РµРј Р±РѕС‚
+if [[ -n "$BOT_TOKEN_VAL" ]]; then
+    systemctl enable block-ips-bot
+    systemctl start block-ips-bot
+    ok "Р‘РѕС‚ Р·Р°РїСѓС‰РµРЅ"
+fi
+
+# Р—Р°РїСѓСЃРєР°РµРј С‚Р°Р№РјРµСЂ РѕР±РЅРѕРІР»РµРЅРёСЏ
+systemctl enable whitevpn-update.timer
+systemctl start whitevpn-update.timer
+ok "РўР°Р№РјРµСЂ РѕР±РЅРѕРІР»РµРЅРёСЏ (6С‡) Р·Р°РїСѓС‰РµРЅ"
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 11. РљРѕРјР°РЅРґР° blockme (SSH-РјРµРЅСЋ)
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+log "РЈСЃС‚Р°РЅРѕРІРєР° РєРѕРјР°РЅРґС‹ blockme..."
+ln -sf "$INSTALL_DIR/manage.sh" /usr/local/bin/blockme
+chmod +x /usr/local/bin/blockme
+ok "РљРѕРјР°РЅРґР° blockme СѓСЃС‚Р°РЅРѕРІР»РµРЅР°"
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 12. РџРµСЂРІРёС‡РЅРѕРµ РѕР±РЅРѕРІР»РµРЅРёРµ СЃРїРёСЃРєРѕРІ
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+log "РџРµСЂРІРёС‡РЅРѕРµ РѕР±РЅРѕРІР»РµРЅРёРµ СЃРїРёСЃРєРѕРІ Р±Р»РѕРєРёСЂРѕРІРєРё..."
+"$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/blocked-ips/block_ips.py" >> "$LOG" 2>&1 || warn "РћС€РёР±РєР° РѕР±РЅРѕРІР»РµРЅРёСЏ IP"
+"$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/blocked-domains/block_domains.py" >> "$LOG" 2>&1 || warn "РћС€РёР±РєР° РѕР±РЅРѕРІР»РµРЅРёСЏ РґРѕРјРµРЅРѕРІ"
+ok "РЎРїРёСЃРєРё РѕР±РЅРѕРІР»РµРЅС‹"
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# 13. РџСЂР°РІР° РґРѕСЃС‚СѓРїР°
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+chown -R root:root "$INSTALL_DIR"
+chmod -R 755 "$INSTALL_DIR"
+chmod 600 "$BOT_CONFIG" 2>/dev/null || true
+
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+# РРўРћР“Рћ
+# в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
 echo ""
-echo "OFF60         для 60% скидки на первый месяц"
-echo "antenka20     буст скидка на 20% + 3% при оплате за 3 месяца"
-echo "antenka6      буст скидка на 15% + 5% при оплате 6 месяцев"
-echo "==============================================================="
-echo "https://vk.cc/cO0UaZ"
-echo "https://vk.cc/cO0UaZ"
-echo "https://vk.cc/cO0UaZ"
+cat << SUMMARY
+
+в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+  вњ… WhiteVPN v${VERSION} вЂ” РЈСЃС‚Р°РЅРѕРІРєР° Р·Р°РІРµСЂС€РµРЅР°!
+в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+
+  рџ“‚ РљР°С‚Р°Р»РѕРі:   ${INSTALL_DIR}
+  рџ“ќ РљРѕРЅС„РёРі:    ${BOT_CONFIG}
+  рџ“Љ Р›РѕРіРё:      ${INSTALL_DIR}/logs/
+
+  рџ›   SSH-РєРѕРјР°РЅРґР°: blockme
+  рџ¤– Р‘РѕС‚:         systemctl status block-ips-bot
+
+  рџ“‹ РЎРµСЂРІРёСЃС‹:
+  вЂў block-ips-bot.service    вЂ” Telegram Р±РѕС‚
+  вЂў whitevpn-update.timer    вЂ” РѕР±РЅРѕРІР»РµРЅРёРµ РєР°Р¶РґС‹Рµ 6С‡
+
+  рџ”— РџР°СЂС‚РЅС‘СЂСЃРєРёРµ С…РѕСЃС‚РёРЅРіРё:
+  вЂў РҐРѕСЃС‚РёРЅРі #1: vk.cc/ct29NQ
+    OFF60 В· antenka20 В· antenka6
+  вЂў РҐРѕСЃС‚РёРЅРі #2: vk.cc/cUxAhj
+    OFF60
+
+в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ
+SUMMARY
+
 echo ""
-echo "(бонус 15% по ссылке в течении 24 часов)"
-echo "==============================================================="
+ok "РЈСЃС‚Р°РЅРѕРІРєР° Р·Р°РІРµСЂС€РµРЅР°! Р’РІРµРґРёС‚Рµ 'blockme' РґР»СЏ SSH-РјРµРЅСЋ."
+echo ""
