@@ -1,0 +1,51 @@
+# WhiteVPN — Белый список: YouTube
+# Эти домены и IP исключаются из блокировки
+# Категория включена по умолчанию
+
+# === Домены YouTube ===
+youtube.com
+www.youtube.com
+m.youtube.com
+music.youtube.com
+youtu.be
+yt.be
+youtube-nocookie.com
+youtubei.googleapis.com
+youtube.googleapis.com
+yt3.ggpht.com
+yt3.googleusercontent.com
+i.ytimg.com
+s.ytimg.com
+lh3.googleusercontent.com
+
+# === Домены для стримов и видео ===
+# googlevideo.com покрывает все r*---sn-*.googlevideo.com субдомены
+# через subdomain matching в block_domains.py
+googlevideo.com
+
+# === Google API (необходимы для YouTube) ===
+accounts.google.com
+www.googleapis.com
+clients1.google.com
+clients2.google.com
+clients3.google.com
+clients4.google.com
+clients5.google.com
+clients6.google.com
+play.google.com
+fonts.googleapis.com
+fonts.gstatic.com
+ssl.gstatic.com
+www.gstatic.com
+lh3.googleusercontent.com
+
+# === IP-подсети Google (основные для YouTube) ===
+# Google владеет огромным пулом IP, здесь основные для видео
+142.250.0.0/15
+172.217.0.0/16
+216.58.192.0/19
+74.125.0.0/16
+173.194.0.0/16
+209.85.128.0/17
+64.233.160.0/19
+108.177.0.0/17
