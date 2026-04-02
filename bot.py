@@ -218,6 +218,7 @@ def delete_custom_entry(idx):
 
 def clear_custom():
     p = os.path.join(WHITELIST_DIR, "custom.txt")
+    os.makedirs(WHITELIST_DIR, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         f.write("# WhiteVPN custom whitelist\n")
 
@@ -770,20 +771,26 @@ async def cb_confirm_disable(cb: CallbackQuery):
 
 
 def enable_protection():
-    subprocess.run(["systemctl", "start", "unbound"], capture_output=True)
-    subprocess.run(["sh", "-c", "echo 'nameserver 127.0.0.1' > /etc/resolv.conf"], capture_output=True)
-    # iptables: check before add
-    r = subprocess.run(
-        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
+    subprocess.run(["systemctl", "start", "unbound"], capture_output=True, timeout=10)
+    with open("/etc/resolv.conf", "w") as f:
+        f.write("nameserver 127.0.0.1\n")
+    # iptables: check LOG and DROP before add
+    r_log = subprocess.run(
+        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
+         "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
         capture_output=True
     )
-    if r.returncode != 0:
-        # Add LOG rule first
+    if r_log.returncode != 0:
         subprocess.run(
             ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
              "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
             capture_output=True
         )
+    r_drop = subprocess.run(
+        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
+        capture_output=True
+    )
+    if r_drop.returncode != 0:
         subprocess.run(
             ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
             capture_output=True
@@ -802,8 +809,9 @@ def disable_protection():
         ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
         capture_output=True
     )
-    subprocess.run(["systemctl", "stop", "unbound"], capture_output=True)
-    subprocess.run(["sh", "-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf"], capture_output=True)
+    subprocess.run(["systemctl", "stop", "unbound"], capture_output=True, timeout=10)
+    with open("/etc/resolv.conf", "w") as f:
+        f.write("nameserver 8.8.8.8\n")
     if os.path.exists(DOCKER_RULES):
         subprocess.run(["bash", DOCKER_RULES, "disable"], capture_output=True, timeout=30)
 
@@ -884,15 +892,16 @@ async def cb_switch_menu(cb: CallbackQuery):
     save_settings(s)
     new = s["menu_mode"]
     await cb.answer(f"Меню: {new.upper()}", show_alert=False)
+    chat_id = cb.message.chat.id
     if new == "reply":
         await cb.message.delete()
         text = await build_status_text()
-        await cb.message.answer(text, parse_mode="Markdown", reply_markup=get_reply_menu())
+        await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=get_reply_menu())
     else:
         text = await build_status_text()
-        await cb.message.answer(text, parse_mode="Markdown",
-                                reply_markup=ReplyKeyboardRemove())
-        await cb.message.answer("Главное меню:", reply_markup=get_inline_menu())
+        await bot.send_message(chat_id, text, parse_mode="Markdown",
+                               reply_markup=ReplyKeyboardRemove())
+        await bot.send_message(chat_id, "Главное меню:", reply_markup=get_inline_menu())
 
 
 # === REFERRAL ===
@@ -973,12 +982,14 @@ async def cb_wl_add(cb: CallbackQuery, state: FSMContext):
 @dp.message(WLStates.waiting_custom_add)
 async def fsm_add(msg: types.Message, state: FSMContext):
     if not await is_admin(msg):
+        await state.clear()
         return
     if msg.text and msg.text.strip() == "/cancel":
         await state.clear()
         await msg.answer("❌ Отменено.")
         return
     if not msg.text:
+        await state.clear()
         await msg.answer("Отправьте текст.")
         return
     entries = [l.strip() for l in msg.text.split("\n") if l.strip()]
@@ -1016,6 +1027,7 @@ async def cb_wl_del(cb: CallbackQuery, state: FSMContext):
 @dp.message(WLStates.waiting_custom_del)
 async def fsm_del(msg: types.Message, state: FSMContext):
     if not await is_admin(msg):
+        await state.clear()
         return
     if msg.text and msg.text.strip() == "/cancel":
         await state.clear()
@@ -1028,8 +1040,10 @@ async def fsm_del(msg: types.Message, state: FSMContext):
         if removed:
             await msg.answer(f"✅ Удалено: `{removed}`", parse_mode="Markdown")
         else:
+            await state.clear()
             await msg.answer("❌ Неверный номер.")
     except ValueError:
+        await state.clear()
         await msg.answer("Введите число или /cancel. Попробуйте ещё раз.")
 
 
@@ -1105,6 +1119,7 @@ async def cb_wl_import(cb: CallbackQuery, state: FSMContext):
 @dp.message(WLStates.waiting_import)
 async def fsm_import(msg: types.Message, state: FSMContext):
     if not await is_admin(msg):
+        await state.clear()
         return
     if msg.text and msg.text.strip() == "/cancel":
         await state.clear()
@@ -1135,7 +1150,6 @@ async def fsm_import(msg: types.Message, state: FSMContext):
     if skipped:
         parts.append(f"⚠️ Пропущено: *{len(skipped)}*")
     await msg.answer("\n".join(parts) if parts else "ℹ️ Нечего импортировать.", parse_mode="Markdown")
-
 
 
 # === DOCKER ===
@@ -1272,29 +1286,31 @@ async def cb_health(cb: CallbackQuery):
 
 def build_health_report():
     checks = []
-    r = subprocess.run(["systemctl", "is-active", "unbound"], capture_output=True, text=True)
+    r = subprocess.run(["systemctl", "is-active", "unbound"], capture_output=True, text=True, timeout=5)
     ok = r.stdout.strip() == "active"
     checks.append(f"{'🟢' if ok else '🔴'} Unbound: {r.stdout.strip()}")
 
-    r = subprocess.run(["ipset", "list", "blocked_ips", "-t"], capture_output=True, text=True)
+    r = subprocess.run(["ipset", "list", "blocked_ips", "-t"], capture_output=True, text=True, timeout=5)
     if r.returncode == 0:
         for line in r.stdout.splitlines():
             if "Number of entries" in line:
-                checks.append(f"🟢 ipset: {line.split(':')[1].strip()} записей")
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    checks.append(f"🟢 ipset: {parts[1].strip()} записей")
                 break
     else:
         checks.append("🔴 ipset: не найден")
 
     r = subprocess.run(
         ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True
+        capture_output=True, timeout=5
     )
     checks.append(f"{'🟢' if r.returncode == 0 else '🔴'} iptables DROP: {'да' if r.returncode == 0 else 'нет'}")
 
     r = subprocess.run(
         ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
          "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-        capture_output=True
+        capture_output=True, timeout=5
     )
     checks.append(f"{'🟢' if r.returncode == 0 else '🔴'} iptables LOG: {'да' if r.returncode == 0 else 'нет'}")
 
@@ -1313,7 +1329,7 @@ def build_health_report():
     except Exception:
         checks.append("🔴 resolv.conf: ошибка")
 
-    r = subprocess.run(["systemctl", "is-active", "x-ui"], capture_output=True, text=True)
+    r = subprocess.run(["systemctl", "is-active", "x-ui"], capture_output=True, text=True, timeout=5)
     checks.append(f"{'🟢' if r.stdout.strip() == 'active' else '⚫'} 3x-ui: {r.stdout.strip()}")
 
     containers, prot = get_docker_info()
@@ -1379,7 +1395,7 @@ async def health_watchdog():
         try:
             r = await asyncio.to_thread(
                 subprocess.run, ["systemctl", "is-active", "unbound"],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=5
             )
             if r.stdout.strip() != "active":
                 for aid in ADMIN_IDS:
@@ -1390,7 +1406,7 @@ async def health_watchdog():
             r = await asyncio.to_thread(
                 subprocess.run,
                 ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-                capture_output=True
+                capture_output=True, text=True, timeout=5
             )
             if r.returncode != 0:
                 for aid in ADMIN_IDS:
@@ -1407,10 +1423,17 @@ async def health_watchdog():
 async def main():
     logger.info(f"WhiteVPN Bot v{VERSION} starting...")
     log_to_file(f"Bot started (v{VERSION})")
-    asyncio.create_task(auto_update_lists())
-    asyncio.create_task(health_watchdog())
-    asyncio.create_task(monitor_block_log())
-    await dp.start_polling(bot)
+    tasks = [
+        asyncio.create_task(auto_update_lists()),
+        asyncio.create_task(health_watchdog()),
+        asyncio.create_task(monitor_block_log()),
+    ]
+    try:
+        await dp.start_polling(bot)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":
