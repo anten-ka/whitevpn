@@ -37,7 +37,6 @@ fonts.googleapis.com
 fonts.gstatic.com
 ssl.gstatic.com
 www.gstatic.com
-lh3.googleusercontent.com
 
 # === IP-подсети Google (основные для YouTube) ===
 # Google владеет огромным пулом IP, здесь основные для видео

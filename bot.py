@@ -556,10 +556,20 @@ async def toggle_protection(callback: CallbackQuery):
                 ["systemctl", "start", "block-ips.service"],
                 ["systemctl", "start", "block-domains.service"],
                 ["sh", "-c", "echo 'nameserver 127.0.0.1' > /etc/resolv.conf"],
-                ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
             ]
             for cmd in commands:
                 subprocess.run(cmd, capture_output=True, text=True)
+
+            # Добавляем iptables правило только если его ещё нет (избегаем дублей)
+            check = subprocess.run(
+                ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
+                capture_output=True, text=True
+            )
+            if check.returncode != 0:
+                subprocess.run(
+                    ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
+                    capture_output=True, text=True
+                )
 
             if os.path.exists(DOCKER_RULES_SCRIPT):
                 subprocess.run(["bash", DOCKER_RULES_SCRIPT, "enable"],
