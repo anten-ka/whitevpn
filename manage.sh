@@ -1,451 +1,531 @@
 #!/bin/bash
+VERSION="0.5"
 
-# Загрузка конфигурации
-if [ -f /etc/block-ips/config ]; then
-  source /etc/block-ips/config
-else
-  echo -e "\033[31m[ERROR]\033[0m Файл конфигурации /etc/block-ips/config не найден."
+if [ "$EUID" -ne 0 ]; then
+  echo -e "\033[31m[!] Запустите скрипт от root: sudo blockme\033[0m"
   exit 1
 fi
 
-# Проверка, существует ли директория blocked-ips
-if [ ! -d "$INSTALL_DIR" ]; then
-  echo -e "\033[31m[ERROR]\033[0m Директория $INSTALL_DIR не существует."
-  exit 1
-fi
-
-# Определение путей для Telegram-бота
-SYSTEM_INSTALL_DIR="/opt/block-traffic"
-TELEGRAM_BOT_DIR="$SYSTEM_INSTALL_DIR/telegram-bot"
-LOG_DIR="$SYSTEM_INSTALL_DIR/logs"
-LOG_FILE="$LOG_DIR/install-bot-$(date +%F_%H-%M-%S).log"
+# Пути
+SYSTEM_DIR="/opt/block-traffic"
+LOG_DIR="$SYSTEM_DIR/logs"
+LOG_FILE="$LOG_DIR/manage-$(date +%F_%H-%M-%S).log"
 CONFIG_DIR="/etc/block-ips"
-BOT_CONFIG_FILE="$CONFIG_DIR/bot_config.json"
-PROJECT_DIR="$SYSTEM_INSTALL_DIR"
+BOT_CONFIG="$CONFIG_DIR/bot_config.json"
+DOCKER_RULES="$SYSTEM_DIR/docker_rules.sh"
+WHITELIST_DIR="$SYSTEM_DIR/whitelist"
+WHITELIST_CONF="$WHITELIST_DIR/whitelist.conf"
+BLOCK_LOG="$LOG_DIR/block_access.log"
+VENV_PY="$SYSTEM_DIR/venv/bin/python3"
 
-# Функции для цветного вывода
-log() { echo -e "\033[34m[INFO]\033[0m $1"; }
-success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
-error() { echo -e "\033[31m[ERROR]\033[0m $1"; }
+mkdir -p "$LOG_DIR" "$WHITELIST_DIR"
 
-# Функция для логирования в файл
-log_to_file() { echo -e "$1" | tee -a "$LOG_FILE"; }
+# Цвета
+log()     { echo -e "\033[34m[INFO]\033[0m $1" | tee -a "$LOG_FILE"; }
+success() { echo -e "\033[32m[OK]\033[0m $1" | tee -a "$LOG_FILE"; }
+error()   { echo -e "\033[31m[ОШИБКА]\033[0m $1" | tee -a "$LOG_FILE"; }
+warn()    { echo -e "\033[33m[!]\033[0m $1" | tee -a "$LOG_FILE"; }
 
-# Функция управления Telegram-ботом
+# ═══════════════════════════════════════════════════════
+# Реферальные ссылки
+# ═══════════════════════════════════════════════════════
+
+show_referral() {
+  local last_ref_file="$LOG_DIR/.last_referral_shown"
+  local now; now=$(date +%s)
+  local last_shown=0
+  [ -f "$last_ref_file" ] && last_shown=$(cat "$last_ref_file" 2>/dev/null || echo 0)
+  [ $((now - last_shown)) -lt 86400 ] && return
+  echo "$now" > "$last_ref_file"
+
+  echo ""
+  echo -e "\033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+  echo -e "\033[1m💰 Партнёрские предложения:\033[0m"
+  echo ""
+  echo "🖥  Хостинг #1 — скидка до 60%:"
+  echo "    https://vk.cc/ct29NQ"
+  echo "    Промокоды:"
+  echo "    OFF60       — 60% на первый месяц"
+  echo "    antenka20   — 20% + 3% при оплате за 3 мес."
+  echo "    antenka6    — 15% + 5% при оплате за 6 мес."
+  echo ""
+  echo "🖥  Хостинг #2 — скидка 60%:"
+  echo "    https://vk.cc/cUxAhj"
+  echo "    OFF60       — 60% на первый месяц"
+  echo -e "\033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+}
+
+# ═══════════════════════════════════════════════════════
+# Whitelist
+# ═══════════════════════════════════════════════════════
+
+load_whitelist_status() {
+  WL_TELEGRAM=1; WL_YOUTUBE=1; WL_CUSTOM=1
+  [ -f "$WHITELIST_CONF" ] || return
+  while IFS='=' read -r key val; do
+    key=$(echo "$key" | tr -d ' '); val=$(echo "$val" | tr -d ' ')
+    case "$key" in
+      telegram) WL_TELEGRAM="$val" ;; youtube) WL_YOUTUBE="$val" ;; custom) WL_CUSTOM="$val" ;;
+    esac
+  done < <(grep -v '^#' "$WHITELIST_CONF" | grep '=')
+}
+
+save_whitelist_status() {
+  cat > "$WHITELIST_CONF" << EOF
+# WhiteVPN whitelist config
+telegram=$WL_TELEGRAM
+youtube=$WL_YOUTUBE
+custom=$WL_CUSTOM
+EOF
+}
+
+get_status_icon() {
+  [ "$1" = "1" ] && echo -e "\033[32m✅ ВКЛ\033[0m" || echo -e "\033[31m❌ ВЫКЛ\033[0m"
+}
+
+count_custom() {
+  local f="$WHITELIST_DIR/custom.txt"
+  [ -f "$f" ] && grep -cv '^#\|^$' "$f" 2>/dev/null || echo "0"
+}
+
+whitelist_menu() {
+  while true; do
+    load_whitelist_status
+    local cc; cc=$(count_custom)
+
+    echo ""
+    echo -e "\033[36m╔══════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[36m║         📋 БЕЛЫЙ СПИСОК (ИСКЛЮЧЕНИЯ)            ║\033[0m"
+    echo -e "\033[36m╠══════════════════════════════════════════════════╣\033[0m"
+    echo -e "\033[36m║\033[0m  1. Telegram       $(get_status_icon $WL_TELEGRAM)                     \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  2. YouTube        $(get_status_icon $WL_YOUTUBE)                     \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  3. Пользоват.     $(get_status_icon $WL_CUSTOM)  ($cc записей)       \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  4. ➕ Добавить    5. ➖ Удалить               \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  6. 📄 Показать   7. 🗑  Очистить             \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  0. ◀️  Назад                                  \033[36m║\033[0m"
+    echo -e "\033[36m╚══════════════════════════════════════════════════╝\033[0m"
+    echo -e "\033[33m⚠️  Добавление в белый список снижает уровень защиты.\033[0m"
+    echo ""
+    read -rp "  Выберите: " wl_choice
+
+    case $wl_choice in
+      1) [ "$WL_TELEGRAM" = "1" ] && WL_TELEGRAM=0 || WL_TELEGRAM=1; save_whitelist_status
+         [ "$WL_TELEGRAM" = "1" ] && success "Telegram ВКЛ" || warn "Telegram ВЫКЛ" ;;
+      2) [ "$WL_YOUTUBE" = "1" ] && WL_YOUTUBE=0 || WL_YOUTUBE=1; save_whitelist_status
+         [ "$WL_YOUTUBE" = "1" ] && success "YouTube ВКЛ" || warn "YouTube ВЫКЛ" ;;
+      3) [ "$WL_CUSTOM" = "1" ] && WL_CUSTOM=0 || WL_CUSTOM=1; save_whitelist_status
+         [ "$WL_CUSTOM" = "1" ] && success "Свой ВКЛ" || warn "Свой ВЫКЛ" ;;
+      4)
+        echo ""
+        echo "Введите домены/IP (по одному), пустая строка = конец:"
+        local custom_file="$WHITELIST_DIR/custom.txt"
+        [ ! -f "$custom_file" ] && echo "# WhiteVPN custom whitelist" > "$custom_file"
+        local added=0
+        while true; do
+          read -rp "  > " entry
+          [ -z "$entry" ] && break
+          if grep -qxF "$entry" "$custom_file" 2>/dev/null; then
+            warn "'$entry' уже есть"
+          else
+            echo "$entry" >> "$custom_file"; success "  + $entry"; ((added++))
+          fi
+        done
+        [ "$added" -gt 0 ] && success "Добавлено: $added. Обновите списки (п.1)."
+        ;;
+      5)
+        local custom_file="$WHITELIST_DIR/custom.txt"
+        if [ -f "$custom_file" ]; then
+          local entries; entries=$(grep -v '^#' "$custom_file" | grep -v '^$')
+          if [ -n "$entries" ]; then
+            echo "$entries" | nl -ba
+            read -rp "  Номер для удаления (0=отмена): " del_num
+            if [ "$del_num" != "0" ] && [ -n "$del_num" ]; then
+              local target; target=$(echo "$entries" | sed -n "${del_num}p")
+              [ -n "$target" ] && { grep -vxF "$target" "$custom_file" > "${custom_file}.tmp"; mv "${custom_file}.tmp" "$custom_file"; success "Удалено: $target"; } || error "Неверный номер."
+            fi
+          else echo "Список пуст."; fi
+        else echo "Список пуст."; fi
+        ;;
+      6)
+        local custom_file="$WHITELIST_DIR/custom.txt"
+        if [ -f "$custom_file" ]; then
+          local entries; entries=$(grep -v '^#' "$custom_file" | grep -v '^$')
+          [ -n "$entries" ] && { echo -e "\033[1m📄 Пользовательский:\033[0m"; echo "$entries" | nl -ba; } || echo "Список пуст."
+        else echo "Список пуст."; fi
+        ;;
+      7)
+        read -rp "  Очистить весь список? (y/n): " confirm
+        [[ "$confirm" =~ ^[yYдД] ]] && { echo "# WhiteVPN custom whitelist" > "$WHITELIST_DIR/custom.txt"; success "Список очищен."; }
+        ;;
+      0) break ;;
+      *) error "Неверный выбор." ;;
+    esac
+  done
+}
+
+# ═══════════════════════════════════════════════════════
+# Лог блокировок
+# ═══════════════════════════════════════════════════════
+
+block_log_menu() {
+  while true; do
+    echo ""
+    echo -e "\033[36m╔══════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[36m║           📜 ЛОГ БЛОКИРОВОК                     ║\033[0m"
+    echo -e "\033[36m╠══════════════════════════════════════════════════╣\033[0m"
+    echo -e "\033[36m║\033[0m  1. 📄 Последние 30 записей                     \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  2. 📄 Последние 100 записей                    \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  3. 📊 Статистика по IP                          \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  4. 📊 Статистика по доменам                     \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  5. 🗑  Очистить лог                             \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  0. ◀️  Назад                                    \033[36m║\033[0m"
+    echo -e "\033[36m╚══════════════════════════════════════════════════╝\033[0m"
+    echo ""
+    read -rp "  Выберите: " bl_choice
+
+    case $bl_choice in
+      1)
+        if [ -f "$BLOCK_LOG" ]; then
+          echo -e "\033[1m📜 Последние 30 записей:\033[0m"
+          tail -30 "$BLOCK_LOG"
+        else echo "Лог пуст."; fi
+        ;;
+      2)
+        if [ -f "$BLOCK_LOG" ]; then
+          echo -e "\033[1m📜 Последние 100 записей:\033[0m"
+          tail -100 "$BLOCK_LOG"
+        else echo "Лог пуст."; fi
+        ;;
+      3)
+        if [ -f "$BLOCK_LOG" ]; then
+          echo -e "\033[1m📊 Топ-20 заблокированных IP:\033[0m"
+          grep "BLOCKED IP" "$BLOCK_LOG" | grep -oP '-> \K\S+' | sort | uniq -c | sort -rn | head -20
+        else echo "Лог пуст."; fi
+        ;;
+      4)
+        if [ -f "$BLOCK_LOG" ]; then
+          echo -e "\033[1m📊 Топ-20 заблокированных доменов:\033[0m"
+          grep "BLOCKED DNS" "$BLOCK_LOG" | grep -oP 'DNS: \K\S+' | sort | uniq -c | sort -rn | head -20
+        else echo "Лог пуст."; fi
+        ;;
+      5)
+        read -rp "  Очистить лог блокировок? (y/n): " confirm
+        [[ "$confirm" =~ ^[yYдД] ]] && { > "$BLOCK_LOG"; success "Лог очищен."; }
+        ;;
+      0) break ;;
+      *) error "Неверный выбор." ;;
+    esac
+  done
+}
+
+# ═══════════════════════════════════════════════════════
+# Telegram-бот
+# ═══════════════════════════════════════════════════════
+
 manage_bot() {
-  # Создание директории логов, если не существует
-  if [ ! -d "$LOG_DIR" ]; then
-    log "Создание директории для логов: $LOG_DIR"
-    mkdir -p "$LOG_DIR"
-    chmod 755 "$LOG_DIR"
-    log_to_file "[INFO] Создание директории для логов: $LOG_DIR"
-  fi
-
-  # Проверка, установлен ли бот
-  if systemctl list-units --full -all | grep -Fq "block-ips-bot.service"; then
-    log "Telegram-бот уже установлен. Обновление конфигурации..."
-    log_to_file "[INFO] Telegram-бот уже установлен. Обновление конфигурации..."
-    # Инструкция перед запросом токена и Telegram ID
-    echo -e "\nДля подключения telegram бота и удобного управления скриптом \"белый VPN\", нужно 2 переменных:"
-    echo "1) API ключ бота, получить можно только в официальном боте https://t.me/BotFather"
-    echo "Создайте бота, придумайте уникальное название что бы в конце названия был \"bot\" и запишите приватный API ключ."
-    echo ""
-    echo "2) Уникальный идентификатор пользователя, который получит права администратора для управления ботом. Узнать свой id можно тут: https://t.me/userinfobot"
-    echo ""
-    echo "После привязки 2х переменных вам станет доступно управление защитой \"белого VPN\" в боте, которого вы создали. Найти бота можете в поисковой строке по придуманному вами названию. Приятного пользования."
-    echo ""
-    # Запрос токена и Telegram ID
-    read -p "Введите токен Telegram-бота: " BOT_TOKEN
-    read -p "Введите Telegram ID администратора: " ADMIN_ID
-    if [ -z "$BOT_TOKEN" ] || [ -z "$ADMIN_ID" ]; then
-      error "Токен или Telegram ID не указаны."
-      log_to_file "[ERROR] Токен или Telegram ID не указаны."
-      return 1
-    fi
-
-    # Обновление конфигурационного файла
-    log "Обновление конфигурации в $BOT_CONFIG_FILE..."
-    log_to_file "[INFO] Обновление конфигурации в $BOT_CONFIG_FILE..."
-    mkdir -p "$CONFIG_DIR"
-    cat << EOF | tee "$BOT_CONFIG_FILE" > /dev/null
-{
-    "BOT_TOKEN": "$BOT_TOKEN",
-    "ADMIN_ID": $ADMIN_ID
-}
-EOF
-    if [ $? -ne 0 ]; then
-      error "Не удалось обновить $BOT_CONFIG_FILE."
-      log_to_file "[ERROR] Не удалось обновить $BOT_CONFIG_FILE."
-      return 1
-    fi
-    chmod 600 "$BOT_CONFIG_FILE"
-
-    # Перезапуск сервиса
-    log "Перезапуск сервиса block-ips-bot..."
-    log_to_file "[INFO] Перезапуск сервиса block-ips-bot..."
-    systemctl daemon-reload >> "$LOG_FILE" 2>&1
-    systemctl restart block-ips-bot.service >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-      error "Не удалось перезапустить сервис block-ips-bot.service."
-      log_to_file "[ERROR] Не удалось перезапустить сервис block-ips-bot.service."
-      systemctl status block-ips-bot.service --no-pager | tee -a "$LOG_FILE"
-      return 1
-    fi
-    if systemctl is-active --quiet block-ips-bot.service; then
-      success "Сервис block-ips-bot.service успешно перезапущен."
-      log_to_file "[SUCCESS] Сервис block-ips-bot.service успешно перезапущен."
-    else
-      error "Сервис block-ips-bot.service не активен."
-      log_to_file "[ERROR] Сервис block-ips-bot.service не активен."
-      systemctl status block-ips-bot.service --no-pager | tee -a "$LOG_FILE"
-      return 1
-    fi
+  if systemctl is-active --quiet block-ips-bot; then
+    echo -e "  🟢 Бот: \033[32mактивен\033[0m"
   else
-    log "Telegram-бот не установлен. Начало установки..."
-    log_to_file "[INFO] Начало установки Telegram-бота..."
-
-    # Проверка версии Python
-    log "Проверка версии Python..."
-    log_to_file "[INFO] Проверка версии Python..."
-    PYTHON_VERSION=$(python3 --version 2>> "$LOG_FILE" | awk '{print $2}' | cut -d'.' -f1,2)
-    if [ -z "$PYTHON_VERSION" ]; then
-      error "Не удалось определить версию Python."
-      log_to_file "[ERROR] Не удалось определить версию Python."
-      return 1
-    fi
-    log "Обнаружена версия Python: $PYTHON_VERSION"
-    log_to_file "[INFO] Обнаружена версия Python: $PYTHON_VERSION"
-
-    # Проверка и установка пакета python3-venv
-    VENV_PACKAGE="python${PYTHON_VERSION}-venv"
-    log "Установка пакета $VENV_PACKAGE..."
-    log_to_file "[INFO] Установка пакета $VENV_PACKAGE..."
-    apt update -qq >> "$LOG_FILE" 2>&1
-    apt install -y -qq "$VENV_PACKAGE" >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-      error "Не удалось установить $VENV_PACKAGE."
-      log_to_file "[ERROR] Не удалось установить $VENV_PACKAGE."
-      return 1
-    fi
-
-    # Проверка доступности python3 -m venv
-    log "Проверка модуля venv..."
-    log_to_file "[INFO] Проверка модуля venv..."
-    python3 -m venv --help >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-      error "Модуль venv недоступен для Python $PYTHON_VERSION."
-      log_to_file "[ERROR] Модуль venv недоступен для Python $PYTHON_VERSION."
-      return 1
-    fi
-
-    # Создание директории для бота
-    log "Создание директории для бота: $TELEGRAM_BOT_DIR..."
-    log_to_file "[INFO] Создание директории для бота: $TELEGRAM_BOT_DIR..."
-    mkdir -p "$TELEGRAM_BOT_DIR"
-    chmod 755 "$TELEGRAM_BOT_DIR"
-
-    # Копирование bot.py
-    log "Копирование bot.py в $TELEGRAM_BOT_DIR..."
-    log_to_file "[INFO] Копирование bot.py в $TELEGRAM_BOT_DIR..."
-    if [ -f "$PROJECT_DIR/bot.py" ]; then
-      cp "$PROJECT_DIR/bot.py" "$TELEGRAM_BOT_DIR/bot.py" 2>> "$LOG_FILE"
-      if [ $? -ne 0 ]; then
-        error "Не удалось скопировать bot.py."
-        log_to_file "[ERROR] Не удалось скопировать bot.py."
-        return 1
-      fi
-    else
-      error "Файл bot.py не найден в $PROJECT_DIR."
-      log_to_file "[ERROR] Файл bot.py не найден в $PROJECT_DIR."
-      return 1
-    fi
-    chmod 644 "$TELEGRAM_BOT_DIR/bot.py"
-
-    # Создание виртуального окружения
-    log "Создание виртуального окружения в $TELEGRAM_BOT_DIR/venv..."
-    log_to_file "[INFO] Создание виртуального окружения в $TELEGRAM_BOT_DIR/venv..."
-    cd "$TELEGRAM_BOT_DIR" || { error "Не удалось перейти в $TELEGRAM_BOT_DIR"; log_to_file "[ERROR] Не удалось перейти в $TELEGRAM_BOT_DIR"; return 1; }
-    timeout 60 python3 -m venv venv >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-      error "Не удалось создать виртуальное окружение."
-      log_to_file "[ERROR] Не удалось создать виртуальное окружение."
-      return 1
-    fi
-
-    # Проверка существования виртуального окружения
-    if [ ! -d "$TELEGRAM_BOT_DIR/venv/bin" ]; then
-      error "Виртуальное окружение не создано."
-      log_to_file "[ERROR] Виртуальное окружение не создано."
-      return 1
-    fi
-
-    # Установка aiogram
-    log "Установка aiogram==3.5.0 в виртуальном окружении..."
-    log_to_file "[INFO] Установка aiogram==3.5.0 в виртуальном окружении..."
-    source "$TELEGRAM_BOT_DIR/venv/bin/activate"
-    pip install -q aiogram==3.5.0 >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-      error "Не удалось установить aiogram==3.5.0."
-      log_to_file "[ERROR] Не удалось установить aiogram==3.5.0."
-      return 1
-    fi
-
-    # Инструкция перед запросом токена и Telegram ID
-    echo -e "\nДля подключения telegram бота и удобного управления скриптом \"белый VPN\", нужно 2 переменных:"
-    echo "1) API ключ бота, получить можно только в официальном боте https://t.me/BotFather"
-    echo "Создайте бота, придумайте уникальное название что бы в конце названия был \"bot\" и запишите приватный API ключ."
-    echo ""
-    echo "2) Уникальный идентификатор пользователя, который получит права администратора для управления ботом. Узнать свой id можно тут: https://t.me/userinfobot"
-    echo ""
-    echo "После привязки 2х переменных вам станет доступно управление защитой \"белого VPN\" в боте, которого вы создали. Найти бота можете в поисковой строке по придуманному вами названию. Приятного пользования."
-    echo ""
-    # Запрос токена и Telegram ID
-    read -p "Введите токен Telegram-бота: " BOT_TOKEN
-    read -p "Введите Telegram ID администратора: " ADMIN_ID
-    if [ -z "$BOT_TOKEN" ] || [ -z "$ADMIN_ID" ]; then
-      error "Токен или Telegram ID не указаны."
-      log_to_file "[ERROR] Токен или Telegram ID не указаны."
-      return 1
-    fi
-
-    # Создание конфигурационного файла
-    log "Создание конфигурации в $BOT_CONFIG_FILE..."
-    log_to_file "[INFO] Создание конфигурации в $BOT_CONFIG_FILE..."
-    mkdir -p "$CONFIG_DIR"
-    cat << EOF | tee "$BOT_CONFIG_FILE" > /dev/null
-{
-    "BOT_TOKEN": "$BOT_TOKEN",
-    "ADMIN_ID": $ADMIN_ID
-}
-EOF
-    if [ $? -ne 0 ]; then
-      error "Не удалось создать $BOT_CONFIG_FILE."
-      log_to_file "[ERROR] Не удалось создать $BOT_CONFIG_FILE."
-      return 1
-    fi
-    chmod 600 "$BOT_CONFIG_FILE"
-
-    # Создание systemd-сервиса
-    log "Настройка systemd-сервиса block-ips-bot..."
-    log_to_file "[INFO] Настройка systemd-сервиса block-ips-bot..."
-    cat << EOF | tee /etc/systemd/system/block-ips-bot.service > /dev/null
-[Unit]
-Description=Telegram Bot for Block IPs
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=$TELEGRAM_BOT_DIR/venv/bin/python3 $TELEGRAM_BOT_DIR/bot.py
-Restart=always
-RestartSec=10
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    if [ $? -ne 0 ]; then
-      error "Не удалось создать сервис block-ips-bot.service."
-      log_to_file "[ERROR] Не удалось создать сервис block-ips-bot.service."
-      return 1
-    fi
-
-    # Запуск сервиса
-    log "Запуск и включение сервиса block-ips-bot..."
-    log_to_file "[INFO] Запуск и включение сервиса block-ips-bot..."
-    systemctl daemon-reload >> "$LOG_FILE" 2>&1
-    systemctl enable block-ips-bot.service >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-      error "Не удалось включить сервис block-ips-bot.service."
-      log_to_file "[ERROR] Не удалось включить сервис block-ips-bot.service."
-      return 1
-    fi
-
-    systemctl start block-ips-bot.service >> "$LOG_FILE" 2>&1
-    if [ $? -ne 0 ]; then
-      error "Не удалось запустить сервис block-ips-bot.service."
-      log_to_file "[ERROR] Не удалось запустить сервис block-ips-bot.service."
-      systemctl status block-ips-bot.service --no-pager | tee -a "$LOG_FILE"
-      return 1
-    fi
-
-    # Проверка статуса сервиса
-    log "Проверка статуса сервиса..."
-    log_to_file "[INFO] Проверка статуса сервиса..."
-    if systemctl is-active --quiet block-ips-bot.service; then
-      success "Сервис block-ips-bot.service активен и работает."
-      log_to_file "[SUCCESS] Сервис block-ips-bot.service активен и работает."
-    else
-      error "Сервис block-ips-bot.service не активен."
-      log_to_file "[ERROR] Сервис block-ips-bot.service не активен."
-      systemctl status block-ips-bot.service --no-pager | tee -a "$LOG_FILE"
-      return 1
-    fi
+    echo -e "  🔴 Бот: \033[31mнеактивен\033[0m"
   fi
-  success "Управление Telegram-ботом завершено."
-  log_to_file "[SUCCESS] Управление Telegram-ботом завершено."
+
+  echo ""
+  echo "  1. 🔄 Перезапустить бота"
+  echo "  2. 🔴 Остановить бота"
+  echo "  3. 🟢 Запустить бота"
+  echo "  4. 📝 Изменить токен/ID"
+  echo "  5. 📋 Логи бота"
+  echo "  0. ◀️  Назад"
+  echo ""
+  read -rp "  Выберите: " bc
+
+  case $bc in
+    1) systemctl restart block-ips-bot && success "Бот перезапущен" || error "Ошибка" ;;
+    2) systemctl stop block-ips-bot && success "Бот остановлен" || error "Ошибка" ;;
+    3) systemctl start block-ips-bot && success "Бот запущен" || error "Ошибка" ;;
+    4)
+      echo ""
+      read -rp "  Bot Token: " new_token
+      read -rp "  Admin ID: " new_admin
+      if [ -n "$new_token" ] && [ -n "$new_admin" ]; then
+        cat > "$BOT_CONFIG" << BCFG
+{
+  "BOT_TOKEN": "$new_token",
+  "ADMIN_ID": $new_admin
+}
+BCFG
+        chmod 600 "$BOT_CONFIG"
+        systemctl restart block-ips-bot
+        success "Конфигурация обновлена, бот перезапущен."
+      else
+        error "Пустые данные, отмена."
+      fi
+      ;;
+    5) journalctl -u block-ips-bot --no-pager -n 50 ;;
+    0) ;;
+    *) error "Неверный выбор." ;;
+  esac
 }
 
-# Функция деинсталляции
-uninstall() {
-  log "Остановка и отключение сервисов..."
-  systemctl stop block-ips.service 2>/dev/null
-  systemctl disable block-ips.service 2>/dev/null
-  systemctl stop block-domains.service 2>/dev/null
-  systemctl disable block-domains.service 2>/dev/null
-  systemctl stop block-ips-bot.service 2>/dev/null
-  systemctl disable block-ips-bot.service 2>/dev/null
-  systemctl stop unbound 2>/dev/null
-  systemctl disable unbound 2>/dev/null
+# ═══════════════════════════════════════════════════════
+# Деинсталляция
+# ═══════════════════════════════════════════════════════
 
-  log "Удаление iptables правила..."
+uninstall() {
+  log "Деинсталляция..."
+
+  for svc in block-ips-bot whitevpn-update; do
+    systemctl stop "$svc" 2>/dev/null; systemctl disable "$svc" 2>/dev/null
+  done
+  systemctl stop whitevpn-update.timer 2>/dev/null; systemctl disable whitevpn-update.timer 2>/dev/null
+
+  # iptables
+  iptables -D OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null
   iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
 
-  log "Удаление файлов сервисов..."
-  rm -f /etc/systemd/system/block-ips.service
-  rm -f /etc/systemd/system/block-domains.service
+  [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" cleanup 2>/dev/null
+
   rm -f /etc/systemd/system/block-ips-bot.service
+  rm -f /etc/systemd/system/whitevpn-update.service
+  rm -f /etc/systemd/system/whitevpn-update.timer
+  rm -f /etc/systemd/system/ipset-restore.service
   systemctl daemon-reload
 
-  log "Удаление команды blockme..."
+  systemctl stop unbound 2>/dev/null; systemctl disable unbound 2>/dev/null
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+
   rm -f /usr/local/bin/blockme
-
-  log "Удаление директории проекта $SYSTEM_INSTALL_DIR..."
-  rm -rf "$SYSTEM_INSTALL_DIR"
-
-  log "Удаление конфигурации..."
-  rm -rf /etc/block-ips
-
-  log "Сброс DNS на 8.8.8.8..."
-  echo 'nameserver 8.8.8.8' | tee /etc/resolv.conf > /dev/null
+  rm -rf "$SYSTEM_DIR"
+  rm -rf "$CONFIG_DIR"
 
   success "Деинсталляция завершена."
 }
 
-disable_blocking() {
-  log "Удаление правила iptables..."
-  iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
-
-  log "Остановка unbound..."
-  systemctl stop unbound
-
-  log "Остановка связанных сервисов..."
-  systemctl stop block-ips.service 2>/dev/null
-  systemctl stop block-domains.service 2>/dev/null
-
-  log "Изменение DNS на 8.8.8.8..."
-  echo 'nameserver 8.8.8.8' | tee /etc/resolv.conf > /dev/null
-
-  success "Защита отключена"
-}
+# ═══════════════════════════════════════════════════════
+# Включение / Отключение защиты
+# ═══════════════════════════════════════════════════════
 
 enable_blocking() {
-  log "Изменение DNS на 127.0.0.1..."
-  echo 'nameserver 127.0.0.1' | tee /etc/resolv.conf > /dev/null
+  log "Включение защиты..."
 
-  log "Запуск unbound..."
+  echo 'nameserver 127.0.0.1' > /etc/resolv.conf
   systemctl start unbound
+  success "Unbound запущен, DNS → 127.0.0.1"
 
-  log "Проверка и установка iptables правила..."
-  iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null || \
+  # LOG-правило (перед DROP)
+  if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null; then
+    iptables -A OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4
+  fi
+  # DROP-правило
+  if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null; then
     iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
+  fi
+  success "iptables (LOG + DROP)"
 
-  log "Запуск связанных сервисов..."
-  systemctl start block-ips.service
-  systemctl start block-domains.service
+  if [ -f "$DOCKER_RULES" ] && command -v docker &>/dev/null; then
+    bash "$DOCKER_RULES" enable 2>/dev/null && success "Docker-защита ВКЛ"
+  fi
 
-  success "Защита включена"
+  load_whitelist_status
+  echo ""
+  echo -e "  \033[36m📋 Белый список:\033[0m"
+  echo -e "     Telegram:   $(get_status_icon $WL_TELEGRAM)"
+  echo -e "     YouTube:    $(get_status_icon $WL_YOUTUBE)"
+  echo -e "     Свой:       $(get_status_icon $WL_CUSTOM) ($(count_custom) записей)"
+  echo ""
+  success "Защита включена."
 }
 
-# Основной цикл меню
-while true; do
-  echo -e "\nVPS хостинг, который работает со скидками до -60%:"
-  echo "================="
-  echo "Хостинг #1"
-  echo "https://vk.cc/ct29NQ"
-  echo "https://vk.cc/ct29NQ"
-  echo "https://vk.cc/ct29NQ"
-  echo ""
-  echo "OFF60"
-  echo "- 60% скидка на первый месяц"
-  echo ""
-  echo "antenka20"
-  echo "- скидка на 20% + 3% за 3 месяца"
-  echo ""
-  echo "antenka6"
-  echo "- скидка на 15% + 5% за 6 месяцев"
-  echo ""
-  echo "antenka12"
-  echo "- скидка на 5% + 10% за год"
-  echo "================="
-  echo "Хостинг #2"
-  echo "https://vk.cc/cO0UaZ"
-  echo "https://vk.cc/cO0UaZ"
-  echo "https://vk.cc/cO0UaZ"
-  echo ""
-  echo "(бонус 15% по ссылке в течении 24 часов)"
-  echo "================="
-  echo "Реферальные ссылки помогают проекту. Спасибо."
-  echo -e "\n\033[1mМеню управления:\033[0m"
-  echo "0. Выход"
-  echo "1. Запустить обновление списка IP и доменов"
-  echo "2. Деинсталлировать проект"
-  echo "3. Отключить защиту"
-  echo "4. Включить защиту"
-  echo "5. Перезагрузить сервисы"
-  echo "6. Установить/обновить Telegram-бот"
+disable_blocking() {
+  log "Отключение защиты..."
+  iptables -D OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null
+  iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
+  systemctl stop unbound 2>/dev/null
+  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+  [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" disable 2>/dev/null
+  success "Защита отключена."
+}
 
-  read -p "Выберите действие (0 - 6): " choice
+# ═══════════════════════════════════════════════════════
+# Статус
+# ═══════════════════════════════════════════════════════
+
+show_status() {
+  echo ""
+  echo -e "\033[1m📊 Состояние сервера:\033[0m"
+  echo ""
+
+  local up_s; up_s=$(awk '{print int($1)}' /proc/uptime)
+  echo -e "  ⏱  Uptime: $((up_s/86400))д $(( (up_s%86400)/3600 ))ч $(( (up_s%3600)/60 ))м"
+
+  local ub_ok=0 ipt_ok=0
+  systemctl is-active --quiet unbound && ub_ok=1
+  iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null && ipt_ok=1
+
+  if [ "$ub_ok" = "1" ] && [ "$ipt_ok" = "1" ]; then
+    echo -e "  🟢 Защита: \033[32mВКЛЮЧЕНА\033[0m"
+  else
+    echo -e "  🔴 Защита: \033[31mВЫКЛЮЧЕНА\033[0m"
+  fi
+
+  local ipc; ipc=$(ipset list blocked_ips -t 2>/dev/null | grep "Number of entries" | awk -F: '{print $2}' | tr -d ' ')
+  [ -n "$ipc" ] && echo "  📊 IP: $ipc" || echo "  📊 ipset: не найден"
+
+  local dom_cnt=0
+  [ -f /etc/unbound/blocked-domains.conf ] && dom_cnt=$(grep -c 'local-zone' /etc/unbound/blocked-domains.conf 2>/dev/null || echo 0)
+  echo "  📊 Доменов: $dom_cnt"
+
+  # 3x-ui
+  if systemctl is-active --quiet x-ui 2>/dev/null; then
+    echo -e "  🖥  3x-ui: \033[32mактивна\033[0m"
+  fi
+
+  # Docker
+  if command -v docker &>/dev/null; then
+    local containers; containers=$(docker ps --format '{{.Names}}' 2>/dev/null | tr '\n' ', ' | sed 's/,$//')
+    if [ -n "$containers" ]; then
+      local dprot="🔴"
+      iptables -L DOCKER-USER -n 2>/dev/null | grep -q blocked_ips && dprot="🟢"
+      echo "  🐳 Docker: $dprot ($containers)"
+    fi
+  fi
+
+  # Whitelist
+  load_whitelist_status
+  echo ""
+  echo -e "  \033[36m📋 Белый список:\033[0m"
+  echo -e "     Telegram:   $(get_status_icon $WL_TELEGRAM)"
+  echo -e "     YouTube:    $(get_status_icon $WL_YOUTUBE)"
+  echo -e "     Свой:       $(get_status_icon $WL_CUSTOM) ($(count_custom) записей)"
+
+  # Бот
+  echo ""
+  if systemctl is-active --quiet block-ips-bot; then
+    echo -e "  🤖 Бот: \033[32mактивен\033[0m"
+  else
+    echo -e "  🤖 Бот: \033[31mнеактивен\033[0m"
+  fi
+
+  # Блок-лог
+  if [ -f "$BLOCK_LOG" ]; then
+    local log_size; log_size=$(du -h "$BLOCK_LOG" 2>/dev/null | awk '{print $1}')
+    local log_lines; log_lines=$(wc -l < "$BLOCK_LOG" 2>/dev/null)
+    echo "  📜 Лог блокировок: $log_lines записей ($log_size)"
+  fi
+
+  # Диск + память
+  echo ""
+  echo "  💾 Диск:"
+  df -h / | tail -1 | awk '{print "     " $1 " " $2 " всего, " $3 " занято (" $5 ")"}'
+  echo "  🧠 Память:"
+  free -h | grep Mem | awk '{print "     " $2 " всего, " $3 " использовано"}'
+  echo ""
+}
+
+# ═══════════════════════════════════════════════════════
+# Docker-подменю
+# ═══════════════════════════════════════════════════════
+
+docker_menu() {
+  if [ ! -f "$DOCKER_RULES" ] || ! command -v docker &>/dev/null; then
+    error "Docker или docker_rules.sh не найден."
+    return
+  fi
+  while true; do
+    bash "$DOCKER_RULES" scan 2>/dev/null
+    echo ""
+    echo -e "\033[36m╔══════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[36m║              🐳 DOCKER-КОНТЕЙНЕРЫ               ║\033[0m"
+    echo -e "\033[36m╠══════════════════════════════════════════════════╣\033[0m"
+    echo -e "\033[36m║\033[0m  1. 🔧 Автонастройка                             \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  2. ✋ Выбрать вручную                           \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  3. 📊 Статус                                    \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  4. 🔴 Отключить                                \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  5. 🗑  Очистка                                  \033[36m║\033[0m"
+    echo -e "\033[36m║\033[0m  0. ◀️  Назад                                    \033[36m║\033[0m"
+    echo -e "\033[36m╚══════════════════════════════════════════════════╝\033[0m"
+    echo ""
+    read -rp "  Выберите: " dc
+    case $dc in
+      1) bash "$DOCKER_RULES" auto-setup ;; 2) bash "$DOCKER_RULES" select ;;
+      3) bash "$DOCKER_RULES" status ;; 4) bash "$DOCKER_RULES" disable ;;
+      5) read -rp "  Удалить ВСЕ Docker-настройки? (y/n): " c; [[ "$c" =~ ^[yYдД] ]] && bash "$DOCKER_RULES" cleanup ;;
+      0) break ;; *) error "Неверный выбор." ;;
+    esac
+  done
+}
+
+# ═══════════════════════════════════════════════════════
+# Главное меню
+# ═══════════════════════════════════════════════════════
+
+show_referral
+
+while true; do
+  echo ""
+  echo -e "\033[36m╔══════════════════════════════════════════════════╗\033[0m"
+  echo -e "\033[36m║       🛡  WhiteVPN v$VERSION — Управление            ║\033[0m"
+  echo -e "\033[36m╠══════════════════════════════════════════════════╣\033[0m"
+
+  local_ub=$(systemctl is-active unbound 2>/dev/null)
+  local_ipt=$(iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null && echo "active" || echo "inactive")
+  if [ "$local_ub" = "active" ] && [ "$local_ipt" = "active" ]; then
+    echo -e "\033[36m║\033[0m       Статус: \033[32m🟢 Защита ВКЛЮЧЕНА\033[0m               \033[36m║\033[0m"
+  else
+    echo -e "\033[36m║\033[0m       Статус: \033[31m🔴 Защита ВЫКЛЮЧЕНА\033[0m              \033[36m║\033[0m"
+  fi
+
+  echo -e "\033[36m║\033[0m                                                  \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   1. 🔄 Обновить списки IP и доменов             \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   2. 🟢 Включить защиту                          \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   3. 🔴 Отключить защиту                         \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   4. 🔁 Перезагрузить сервисы                    \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   5. 📋 Белый список                             \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   6. 🐳 Docker-контейнеры                        \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   7. 🤖 Telegram-бот                             \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   8. 📊 Статус сервера                           \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   9. 📜 Лог блокировок                           \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m  10. 🗑  Деинсталлировать                         \033[36m║\033[0m"
+  echo -e "\033[36m║\033[0m   0. 🚪 Выход                                    \033[36m║\033[0m"
+  echo -e "\033[36m╚══════════════════════════════════════════════════╝\033[0m"
+  echo ""
+
+  read -rp "  Выберите действие: " choice
 
   case $choice in
-    0)
-      success "Выход."
-      break
-      ;;
+    0) success "Выход."; break ;;
     1)
-      log "Запуск обновления списка IP и доменов..."
-      if [ -f "$INSTALL_DIR/block_ips.py" ]; then
-        "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/block_ips.py"
-        success "Обновление IP завершено."
-      else
-        error "Файл $INSTALL_DIR/block_ips.py не найден."
-      fi
-
-      if [ -f "$INSTALL_DIR/blocked-domains/block_domains.py" ]; then
-        "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/blocked-domains/block_domains.py"
-        success "Обновление доменов завершено."
-      else
-        error "Файл $INSTALL_DIR/blocked-domains/block_domains.py не найден."
-      fi
+      log "Обновление списков..."
+      "$VENV_PY" "$SYSTEM_DIR/blocked-ips/block_ips.py" 2>&1 | tee -a "$LOG_FILE"
+      "$VENV_PY" "$SYSTEM_DIR/blocked-domains/block_domains.py" 2>&1 | tee -a "$LOG_FILE"
+      success "Обновление завершено."
       ;;
-    2)
-      log "Запуск деинсталляции..."
-      uninstall
-      success "Проект удален."
-      break
-      ;;
-    3)
-      log "Отключение защиты..."
-      disable_blocking
-      ;;
+    2) enable_blocking ;;
+    3) disable_blocking ;;
     4)
-      log "Включение защиты..."
-      enable_blocking
-      ;;
-    5)
-      log "Перезапуск unbound и iptables..."
-      systemctl restart unbound
+      log "Перезапуск сервисов..."
+      systemctl restart unbound 2>/dev/null
+      # Переприменяем iptables
+      iptables -D OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null
       iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
+      iptables -A OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4
       iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
-      success "Перезапуск завершен."
+      [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" apply-ipt 2>/dev/null
+      success "Сервисы перезапущены."
       ;;
-    6)
-      log "Управление Telegram-ботом..."
-      manage_bot
+    5) whitelist_menu ;;
+    6) docker_menu ;;
+    7) manage_bot ;;
+    8) show_status ;;
+    9) block_log_menu ;;
+    10)
+      echo ""
+      echo -e "\033[31m[!] Все данные проекта будут удалены!\033[0m"
+      read -rp "  Вы уверены? (y/n): " confirm
+      if [[ "$confirm" =~ ^[yYдД] ]]; then
+        uninstall; break
+      fi
       ;;
-    *)
-      error "Неверный выбор. Пожалуйста, выберите 0 - 6."
-      ;;
+    *) error "Неверный выбор (0-10)." ;;
   esac
-  echo -e "\nНажмите Enter, чтобы вернуться в меню..."
-  read -r
 done

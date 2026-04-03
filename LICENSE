@@ -1,23 +1,21 @@
-Лицензионное соглашение (не для коммерческого использования)
-Этот проект (WhiteVPN) является интеллектуальной собственностью Виталии (автор канала anten-ka). Все права на него защищены. Этот документ предоставляет вам ограниченную, неисключительную и отзывную лицензию на использование программного обеспечения исключительно в некоммерческих, личных целях.
+MIT License
 
-2. Запрещённые действия
-Запрещается совершать следующие действия:
+Copyright (c) 2024 anten-ka
 
-Коммерческое использование: Использование, распространение или продажа проекта в коммерческих целях. Это включает, но не ограничивается, продажей услуг, предоставляемых проектом, или включением его в коммерческий продукт.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Форкинг и копирование: Создание форков, копирование, воспроизведение, модификация или создание производных работ на основе этого проекта. Это включает копирование любой части кода, документации или дизайна.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-Распространение: Публикация, распространение или передача исходного кода или скомпилированных версий проекта третьим лицам.
-
-Изменение лицензии: Удаление или изменение этого лицензионного соглашения.
-
-3. Ответственность и гарантии
-Как есть: Проект предоставляется «как есть», без каких-либо явных или подразумеваемых гарантий.
-
-Ограничение ответственности: Владелец проекта не несёт ответственности за любой ущерб, прямой или косвенный, который может возникнуть в результате использования или невозможности использования проекта.
-
-4. Нарушение условий
-Любое нарушение условий этого лицензионного соглашения влечёт за собой немедленное прекращение ваших прав на использование проекта. Владелец проекта имеет право принять все возможные правовые меры для защиты своих прав.
-5. Вы обязуетесь не использовать скрипт для нарушения любого законадательства и любого вреда автору канала или скрипта, а так же 3м лицам.
-6. Коммерческое использование возможно с согласованием автора и владельцем скрипта. Пожалуйста обратитесь по почте: 1vpn1@rambler.ru
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

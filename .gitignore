@@ -1,0 +1,14 @@
+*.bat
+*.ps1
+*.txt
+*.bin
+*_output*
+create_release*
+fix_release*
+make_release*
+verify_release*
+decode_bot*
+add_putty_key*
+b64_*
+yes.txt
+release_body*

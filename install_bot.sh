@@ -1,11 +1,17 @@
 #!/bin/bash
+VERSION="0.3"
 
-# Р¤СѓРЅРєС†РёРё РґР»СЏ С†РІРµС‚РЅРѕРіРѕ РІС‹РІРѕРґР° Рё Р»РѕРіРёСЂРѕРІР°РЅРёСЏ
+if [ "$EUID" -ne 0 ]; then
+  echo -e "\033[31m[!] Запустите скрипт от root: sudo bash install_bot.sh\033[0m"
+  exit 1
+fi
+
+# Функции для цветного вывода и логирования
 log() { echo -e "\033[34m[INFO]\033[0m $1" | tee -a "$LOG_FILE"; }
 success() { echo -e "\033[32m[SUCCESS]\033[0m $1" | tee -a "$LOG_FILE"; }
 error() { echo -e "\033[31m[ERROR]\033[0m $1" | tee -a "$LOG_FILE"; }
 
-# РћРїСЂРµРґРµР»РµРЅРёРµ РїСѓС‚РµР№
+# Определение путей
 SYSTEM_INSTALL_DIR="/opt/block-traffic"
 TELEGRAM_BOT_DIR="$SYSTEM_INSTALL_DIR/telegram-bot"
 LOG_DIR="$SYSTEM_INSTALL_DIR/logs"
@@ -13,111 +19,117 @@ LOG_FILE="$LOG_DIR/install-bot-$(date +%F_%H-%M-%S).log"
 CONFIG_DIR="/etc/block-ips"
 BOT_CONFIG_FILE="$CONFIG_DIR/bot_config.json"
 
-# РЎРѕР·РґР°РЅРёРµ РґРёСЂРµРєС‚РѕСЂРёРё Р»РѕРіРѕРІ
+# Создание директории логов
 if [ ! -d "$LOG_DIR" ]; then
-  log "РЎРѕР·РґР°РЅРёРµ РґРёСЂРµРєС‚РѕСЂРёРё РґР»СЏ Р»РѕРіРѕРІ: $LOG_DIR"
+  log "Создание директории для логов: $LOG_DIR"
   mkdir -p "$LOG_DIR"
   chmod 755 "$LOG_DIR"
 fi
 
-log "РќР°С‡Р°Р»Рѕ СѓСЃС‚Р°РЅРѕРІРєРё Telegram-Р±РѕС‚Р°..."
+log "Начало установки Telegram-бота..."
 
-# РџСЂРѕРІРµСЂРєР° СѓСЃС‚Р°РЅРѕРІРєРё block-ips
+# Проверка установки block-ips
 if [ ! -f "$CONFIG_DIR/config" ]; then
-  error "РЎРєСЂРёРїС‚ block-ips РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ. РЈСЃС‚Р°РЅРѕРІРёС‚Рµ РµРіРѕ СЃ РїРѕРјРѕС‰СЊСЋ install.sh."
+  error "Скрипт block-ips не установлен. Установите его с помощью install.sh."
   exit 1
 fi
 source "$CONFIG_DIR/config"
 if ! systemctl list-units --full -all | grep -Fq "block-ips.service"; then
-  error "РЎРµСЂРІРёСЃ block-ips.service РЅРµ РЅР°Р№РґРµРЅ. РЈСЃС‚Р°РЅРѕРІРёС‚Рµ block-ips."
+  error "Сервис block-ips.service не найден. Установите block-ips."
   exit 1
 fi
 
-# РџСЂРѕРІРµСЂРєР° РІРµСЂСЃРёРё Python
-log "РџСЂРѕРІРµСЂРєР° РІРµСЂСЃРёРё Python..."
+# Проверка версии Python
+log "Проверка версии Python..."
 PYTHON_VERSION=$(python3 --version 2>> "$LOG_FILE" | awk '{print $2}' | cut -d'.' -f1,2)
 if [ -z "$PYTHON_VERSION" ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ РѕРїСЂРµРґРµР»РёС‚СЊ РІРµСЂСЃРёСЋ Python. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось определить версию Python. Проверьте $LOG_FILE."
   exit 1
 fi
-log "РћР±РЅР°СЂСѓР¶РµРЅР° РІРµСЂСЃРёСЏ Python: $PYTHON_VERSION"
+log "Обнаружена версия Python: $PYTHON_VERSION"
 
-# РџСЂРѕРІРµСЂРєР° Рё СѓСЃС‚Р°РЅРѕРІРєР° РїР°РєРµС‚Р° python3-venv
+# Проверка и установка пакета python3-venv
 VENV_PACKAGE="python${PYTHON_VERSION}-venv"
-log "РЈСЃС‚Р°РЅРѕРІРєР° РїР°РєРµС‚Р° $VENV_PACKAGE..."
+log "Установка пакета $VENV_PACKAGE..."
 sudo apt update -qq >> "$LOG_FILE" 2>&1
 sudo apt install -y -qq "$VENV_PACKAGE" >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ СѓСЃС‚Р°РЅРѕРІРёС‚СЊ $VENV_PACKAGE. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось установить $VENV_PACKAGE. Проверьте $LOG_FILE."
   exit 1
 fi
 
-# РџСЂРѕРІРµСЂРєР° РґРѕСЃС‚СѓРїРЅРѕСЃС‚Рё python3 -m venv
-log "РџСЂРѕРІРµСЂРєР° РјРѕРґСѓР»СЏ venv..."
+# Проверка доступности python3 -m venv
+log "Проверка модуля venv..."
 python3 -m venv --help >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
-  error "РњРѕРґСѓР»СЊ venv РЅРµРґРѕСЃС‚СѓРїРµРЅ РґР»СЏ Python $PYTHON_VERSION. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Модуль venv недоступен для Python $PYTHON_VERSION. Проверьте $LOG_FILE."
   exit 1
 fi
 
-# РЎРѕР·РґР°РЅРёРµ РґРёСЂРµРєС‚РѕСЂРёРё РґР»СЏ Р±РѕС‚Р°
-log "РЎРѕР·РґР°РЅРёРµ РґРёСЂРµРєС‚РѕСЂРёРё РґР»СЏ Р±РѕС‚Р°: $TELEGRAM_BOT_DIR..."
+# Создание директории для бота
+log "Создание директории для бота: $TELEGRAM_BOT_DIR..."
 sudo mkdir -p "$TELEGRAM_BOT_DIR"
 sudo chmod 755 "$TELEGRAM_BOT_DIR"
 
-# РљРѕРїРёСЂРѕРІР°РЅРёРµ bot.py
-log "РљРѕРїРёСЂРѕРІР°РЅРёРµ bot.py РІ $TELEGRAM_BOT_DIR..."
+# Копирование bot.py
+log "Копирование bot.py в $TELEGRAM_BOT_DIR..."
 sudo cp "$(dirname "$0")/bot.py" "$TELEGRAM_BOT_DIR/bot.py" 2>> "$LOG_FILE"
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ СЃРєРѕРїРёСЂРѕРІР°С‚СЊ bot.py. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось скопировать bot.py. Проверьте $LOG_FILE."
   exit 1
 fi
 sudo chmod 644 "$TELEGRAM_BOT_DIR/bot.py"
 
-# РЎРѕР·РґР°РЅРёРµ РІРёСЂС‚СѓР°Р»СЊРЅРѕРіРѕ РѕРєСЂСѓР¶РµРЅРёСЏ СЃ С‚Р°Р№РјР°СѓС‚РѕРј
-log "РЎРѕР·РґР°РЅРёРµ РІРёСЂС‚СѓР°Р»СЊРЅРѕРіРѕ РѕРєСЂСѓР¶РµРЅРёСЏ РІ $TELEGRAM_BOT_DIR/venv..."
-cd "$TELEGRAM_BOT_DIR" || { error "РќРµ СѓРґР°Р»РѕСЃСЊ РїРµСЂРµР№С‚Рё РІ $TELEGRAM_BOT_DIR"; exit 1; }
+# Создание виртуального окружения с таймаутом
+log "Создание виртуального окружения в $TELEGRAM_BOT_DIR/venv..."
+cd "$TELEGRAM_BOT_DIR" || { error "Не удалось перейти в $TELEGRAM_BOT_DIR"; exit 1; }
 timeout 60 python3 -m venv venv >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ РІРёСЂС‚СѓР°Р»СЊРЅРѕРµ РѕРєСЂСѓР¶РµРЅРёРµ. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось создать виртуальное окружение. Проверьте $LOG_FILE."
   exit 1
 fi
 
-# РџСЂРѕРІРµСЂРєР° СЃСѓС‰РµСЃС‚РІРѕРІР°РЅРёСЏ РІРёСЂС‚СѓР°Р»СЊРЅРѕРіРѕ РѕРєСЂСѓР¶РµРЅРёСЏ
+# Проверка существования виртуального окружения
 if [ ! -d "$TELEGRAM_BOT_DIR/venv/bin" ]; then
-  error "Р’РёСЂС‚СѓР°Р»СЊРЅРѕРµ РѕРєСЂСѓР¶РµРЅРёРµ РЅРµ СЃРѕР·РґР°РЅРѕ. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Виртуальное окружение не создано. Проверьте $LOG_FILE."
   exit 1
 fi
 
-# РђРєС‚РёРІР°С†РёСЏ Рё СѓСЃС‚Р°РЅРѕРІРєР° aiogram
-log "РЈСЃС‚Р°РЅРѕРІРєР° aiogram==3.5.0 РІ РІРёСЂС‚СѓР°Р»СЊРЅРѕРј РѕРєСЂСѓР¶РµРЅРёРё..."
+# Активация и установка aiogram
+log "Установка aiogram==3.5.0 в виртуальном окружении..."
 source "$TELEGRAM_BOT_DIR/venv/bin/activate"
 pip install -q aiogram==3.5.0 >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ СѓСЃС‚Р°РЅРѕРІРёС‚СЊ aiogram==3.5.0. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось установить aiogram==3.5.0. Проверьте $LOG_FILE."
   exit 1
 fi
 
-# РРЅСЃС‚СЂСѓРєС†РёСЏ РїРµСЂРµРґ Р·Р°РїСЂРѕСЃРѕРј С‚РѕРєРµРЅР° Рё Telegram ID
-echo -e "\nР”Р»СЏ РїРѕРґРєР»СЋС‡РµРЅРёСЏ telegram Р±РѕС‚Р° Рё СѓРґРѕР±РЅРѕРіРѕ СѓРїСЂР°РІР»РµРЅРёСЏ СЃРєСЂРёРїС‚РѕРј \"Р±РµР»С‹Р№ VPN\", РЅСѓР¶РЅРѕ 2 РїРµСЂРµРјРµРЅРЅС‹С…:"
-echo "1) API РєР»СЋС‡ Р±РѕС‚Р°, РїРѕР»СѓС‡РёС‚СЊ РјРѕР¶РЅРѕ С‚РѕР»СЊРєРѕ РІ РѕС„РёС†РёР°Р»СЊРЅРѕРј Р±РѕС‚Рµ https://t.me/BotFather"
-echo "РЎРѕР·РґР°Р№С‚Рµ Р±РѕС‚Р°, РїСЂРёРґСѓРјР°Р№С‚Рµ СѓРЅРёРєР°Р»СЊРЅРѕРµ РЅР°Р·РІР°РЅРёРµ С‡С‚Рѕ Р±С‹ РІ РєРѕРЅС†Рµ РЅР°Р·РІР°РЅРёСЏ Р±С‹Р» \"bot\" Рё Р·Р°РїРёС€РёС‚Рµ РїСЂРёРІР°С‚РЅС‹Р№ API РєР»СЋС‡."
+# Инструкция перед запросом токена и Telegram ID
+echo -e "\nДля подключения telegram бота и удобного управления скриптом \"белый VPN\", нужно 2 переменных:"
+echo "1) API ключ бота, получить можно только в официальном боте https://t.me/BotFather"
+echo "Создайте бота, придумайте уникальное название что бы в конце названия был \"bot\" и запишите приватный API ключ."
 echo ""
-echo "2) РЈРЅРёРєР°Р»СЊРЅС‹Р№ РёРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ, РєРѕС‚РѕСЂС‹Р№ РїРѕР»СѓС‡РёС‚ РїСЂР°РІР° Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂР° РґР»СЏ СѓРїСЂР°РІР»РµРЅРёСЏ Р±РѕС‚РѕРј. РЈР·РЅР°С‚СЊ СЃРІРѕР№ id РјРѕР¶РЅРѕ С‚СѓС‚: https://t.me/userinfobot"
+echo "2) Уникальный идентификатор пользователя, который получит права администратора для управления ботом. Узнать свой id можно тут: https://t.me/userinfobot"
 echo ""
-echo "РџРѕСЃР»Рµ РїСЂРёРІСЏР·РєРё 2С… РїРµСЂРµРјРµРЅРЅС‹С… РІР°Рј СЃС‚Р°РЅРµС‚ РґРѕСЃС‚СѓРїРЅРѕ СѓРїСЂР°РІР»РµРЅРёРµ Р·Р°С‰РёС‚РѕР№ \"Р±РµР»РѕРіРѕ VPN\" РІ Р±РѕС‚Рµ, РєРѕС‚РѕСЂРѕРіРѕ РІС‹ СЃРѕР·РґР°Р»Рё. РќР°Р№С‚Рё Р±РѕС‚Р° РјРѕР¶РµС‚Рµ РІ РїРѕРёСЃРєРѕРІРѕР№ СЃС‚СЂРѕРєРµ РїРѕ РїСЂРёРґСѓРјР°РЅРЅРѕРјСѓ РІР°РјРё РЅР°Р·РІР°РЅРёСЋ. РџСЂРёСЏС‚РЅРѕРіРѕ РїРѕР»СЊР·РѕРІР°РЅРёСЏ."
+echo "После привязки 2х переменных вам станет доступно управление защитой \"белого VPN\" в боте, которого вы создали. Найти бота можете в поисковой строке по придуманному вами названию. Приятного пользования."
 echo ""
 
-# Р—Р°РїСЂРѕСЃ С‚РѕРєРµРЅР° Рё Telegram ID
-read -p "Р’РІРµРґРёС‚Рµ С‚РѕРєРµРЅ Telegram-Р±РѕС‚Р°: " BOT_TOKEN
-read -p "Р’РІРµРґРёС‚Рµ Telegram ID Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂР°: " ADMIN_ID
+# Запрос токена и Telegram ID
+read -p "Введите токен Telegram-бота: " BOT_TOKEN
+read -p "Введите Telegram ID администратора: " ADMIN_ID
 if [ -z "$BOT_TOKEN" ] || [ -z "$ADMIN_ID" ]; then
-  error "РўРѕРєРµРЅ РёР»Рё Telegram ID РЅРµ СѓРєР°Р·Р°РЅС‹."
+  error "Токен или Telegram ID не указаны."
   exit 1
 fi
 
-# РЎРѕР·РґР°РЅРёРµ РєРѕРЅС„РёРіСѓСЂР°С†РёРѕРЅРЅРѕРіРѕ С„Р°Р№Р»Р°
-log "РЎРѕР·РґР°РЅРёРµ РєРѕРЅС„РёРіСѓСЂР°С†РёРё РІ $BOT_CONFIG_FILE..."
+# Проверка что ADMIN_ID — число
+if ! [[ "$ADMIN_ID" =~ ^[0-9]+$ ]]; then
+  error "Telegram ID должен быть числом. Получено: $ADMIN_ID"
+  exit 1
+fi
+
+# Создание конфигурационного файла
+log "Создание конфигурации в $BOT_CONFIG_FILE..."
 sudo mkdir -p "$CONFIG_DIR"
 cat << EOF | sudo tee "$BOT_CONFIG_FILE" > /dev/null
 {
@@ -126,13 +138,13 @@ cat << EOF | sudo tee "$BOT_CONFIG_FILE" > /dev/null
 }
 EOF
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ $BOT_CONFIG_FILE. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось создать $BOT_CONFIG_FILE. Проверьте $LOG_FILE."
   exit 1
 fi
 sudo chmod 600 "$BOT_CONFIG_FILE"
 
-# РЎРѕР·РґР°РЅРёРµ systemd-СЃРµСЂРІРёСЃР°
-log "РќР°СЃС‚СЂРѕР№РєР° systemd-СЃРµСЂРІРёСЃР° block-ips-bot..."
+# Создание systemd-сервиса
+log "Настройка systemd-сервиса block-ips-bot..."
 cat << EOF | sudo tee /etc/systemd/system/block-ips-bot.service > /dev/null
 [Unit]
 Description=Telegram Bot for Block IPs
@@ -149,78 +161,78 @@ User=root
 WantedBy=multi-user.target
 EOF
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР·РґР°С‚СЊ СЃРµСЂРІРёСЃ block-ips-bot.service. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось создать сервис block-ips-bot.service. Проверьте $LOG_FILE."
   exit 1
 fi
 
-# Р—Р°РїСѓСЃРє СЃРµСЂРІРёСЃР°
-log "Р—Р°РїСѓСЃРє Рё РІРєР»СЋС‡РµРЅРёРµ СЃРµСЂРІРёСЃР° block-ips-bot..."
+# Запуск сервиса
+log "Запуск и включение сервиса block-ips-bot..."
 sudo systemctl daemon-reload >> "$LOG_FILE" 2>&1
 sudo systemctl enable block-ips-bot.service >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ РІРєР»СЋС‡РёС‚СЊ СЃРµСЂРІРёСЃ block-ips-bot.service. РџСЂРѕРІРµСЂСЊС‚Рµ $LOG_FILE."
+  error "Не удалось включить сервис block-ips-bot.service. Проверьте $LOG_FILE."
   exit 1
 fi
 
 sudo systemctl start block-ips-bot.service >> "$LOG_FILE" 2>&1
 if [ $? -ne 0 ]; then
-  error "РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РїСѓСЃС‚РёС‚СЊ СЃРµСЂРІРёСЃ block-ips-bot.service."
-  log "РњРёРЅРё-РґРёР°РіРЅРѕСЃС‚РёРєР°:"
+  error "Не удалось запустить сервис block-ips-bot.service."
+  log "Мини-диагностика:"
   sudo systemctl status block-ips-bot.service --no-pager | tee -a "$LOG_FILE"
   exit 1
 fi
 
-# РџСЂРѕРІРµСЂРєР° СЃС‚Р°С‚СѓСЃР° СЃРµСЂРІРёСЃР°
-log "РџСЂРѕРІРµСЂРєР° СЃС‚Р°С‚СѓСЃР° СЃРµСЂРІРёСЃР°..."
+# Проверка статуса сервиса
+log "Проверка статуса сервиса..."
 if systemctl is-active --quiet block-ips-bot.service; then
-  success "РЎРµСЂРІРёСЃ block-ips-bot.service Р°РєС‚РёРІРµРЅ Рё СЂР°Р±РѕС‚Р°РµС‚."
+  success "Сервис block-ips-bot.service активен и работает."
 else
-  error "РЎРµСЂРІРёСЃ block-ips-bot.service РЅРµ Р°РєС‚РёРІРµРЅ."
-  log "РњРёРЅРё-РґРёР°РіРЅРѕСЃС‚РёРєР°:"
+  error "Сервис block-ips-bot.service не активен."
+  log "Мини-диагностика:"
   sudo systemctl status block-ips-bot.service --no-pager | tee -a "$LOG_FILE"
   exit 1
 fi
 
-success "РЈСЃС‚Р°РЅРѕРІРєР° Telegram-Р±РѕС‚Р° Р·Р°РІРµСЂС€РµРЅР°."
+success "Установка Telegram-бота завершена."
 
-# Р’С‹РІРѕРґ СЃРІРѕРґРЅРѕР№ РёРЅС„РѕСЂРјР°С†РёРё
-echo -e "\n\033[1mРЎРІРѕРґРЅР°СЏ РёРЅС„РѕСЂРјР°С†РёСЏ:\033[0m" | tee -a "$LOG_FILE"
-echo "  - РЎРєСЂРёРїС‚ Р±РѕС‚Р°: $TELEGRAM_BOT_DIR/bot.py" | tee -a "$LOG_FILE"
-echo "  - Р’РёСЂС‚СѓР°Р»СЊРЅРѕРµ РѕРєСЂСѓР¶РµРЅРёРµ: $TELEGRAM_BOT_DIR/venv" | tee -a "$LOG_FILE"
-echo "  - РљРѕРЅС„РёРіСѓСЂР°С†РёСЏ: $BOT_CONFIG_FILE" | tee -a "$LOG_FILE"
-echo "  - РЎРµСЂРІРёСЃ: block-ips-bot.service" | tee -a "$LOG_FILE"
-echo "  - Р›РѕРі СѓСЃС‚Р°РЅРѕРІРєРё: $LOG_FILE" | tee -a "$LOG_FILE"
+# Вывод сводной информации
+echo -e "\n\033[1mСводная информация:\033[0m" | tee -a "$LOG_FILE"
+echo "  - Скрипт бота: $TELEGRAM_BOT_DIR/bot.py" | tee -a "$LOG_FILE"
+echo "  - Виртуальное окружение: $TELEGRAM_BOT_DIR/venv" | tee -a "$LOG_FILE"
+echo "  - Конфигурация: $BOT_CONFIG_FILE" | tee -a "$LOG_FILE"
+echo "  - Сервис: block-ips-bot.service" | tee -a "$LOG_FILE"
+echo "  - Лог установки: $LOG_FILE" | tee -a "$LOG_FILE"
 
-echo -e "\n\033[1mРРЅСЃС‚СЂСѓРєС†РёРё:\033[0m" | tee -a "$LOG_FILE"
-echo "  - Р”Р»СЏ СЃРјРµРЅС‹ Telegram ID РѕС‚СЂРµРґР°РєС‚РёСЂСѓР№С‚Рµ: $BOT_CONFIG_FILE" | tee -a "$LOG_FILE"
-echo "  - РџСЂРѕРІРµСЂРёС‚СЊ СЃС‚Р°С‚СѓСЃ: sudo systemctl status block-ips-bot.service" | tee -a "$LOG_FILE"
-echo "  - РџСЂРѕСЃРјРѕС‚СЂРµС‚СЊ Р»РѕРіРё: sudo journalctl -u block-ips-bot.service" | tee -a "$LOG_FILE"
-echo "  - РџРµСЂРµР·Р°РїСѓСЃС‚РёС‚СЊ СЃРµСЂРІРёСЃ: sudo systemctl restart block-ips-bot.service" | tee -a "$LOG_FILE"
+echo -e "\n\033[1mИнструкции:\033[0m" | tee -a "$LOG_FILE"
+echo "  - Для смены Telegram ID отредактируйте: $BOT_CONFIG_FILE" | tee -a "$LOG_FILE"
+echo "  - Проверить статус: sudo systemctl status block-ips-bot.service" | tee -a "$LOG_FILE"
+echo "  - Просмотреть логи: sudo journalctl -u block-ips-bot.service" | tee -a "$LOG_FILE"
+echo "  - Перезапустить сервис: sudo systemctl restart block-ips-bot.service" | tee -a "$LOG_FILE"
 
-echo -e "\nVPS С…РѕСЃС‚РёРЅРі, РєРѕС‚РѕСЂС‹Р№ СЂР°Р±РѕС‚Р°РµС‚ СЃРѕ СЃРєРёРґРєР°РјРё РґРѕ -60%:" | tee -a "$LOG_FILE"
+echo -e "\nVPS хостинг, который работает со скидками до -60%:" | tee -a "$LOG_FILE"
 echo "=================" | tee -a "$LOG_FILE"
-echo "РҐРѕСЃС‚РёРЅРі #1" | tee -a "$LOG_FILE"
+echo "Хостинг #1" | tee -a "$LOG_FILE"
 echo "https://vk.cc/ct29NQ" | tee -a "$LOG_FILE"
 echo "https://vk.cc/ct29NQ" | tee -a "$LOG_FILE"
 echo "https://vk.cc/ct29NQ" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 echo "OFF60" | tee -a "$LOG_FILE"
-echo "- 60% СЃРєРёРґРєР° РЅР° РїРµСЂРІС‹Р№ РјРµСЃСЏС†" | tee -a "$LOG_FILE"
+echo "- 60% скидка на первый месяц" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 echo "antenka20" | tee -a "$LOG_FILE"
-echo "- СЃРєРёРґРєР° РЅР° 20% + 3% Р·Р° 3 РјРµСЃСЏС†Р°" | tee -a "$LOG_FILE"
+echo "- скидка на 20% + 3% за 3 месяца" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 echo "antenka6" | tee -a "$LOG_FILE"
-echo "- СЃРєРёРґРєР° РЅР° 15% + 5% Р·Р° 6 РјРµСЃСЏС†РµРІ" | tee -a "$LOG_FILE"
+echo "- скидка на 15% + 5% за 6 месяцев" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 echo "antenka12" | tee -a "$LOG_FILE"
-echo "- СЃРєРёРґРєР° РЅР° 5% + 10% Р·Р° РіРѕРґ" | tee -a "$LOG_FILE"
+echo "- скидка на 5% + 10% за год" | tee -a "$LOG_FILE"
 echo "=================" | tee -a "$LOG_FILE"
-echo "РҐРѕСЃС‚РёРЅРі #2" | tee -a "$LOG_FILE"
+echo "Хостинг #2" | tee -a "$LOG_FILE"
 echo "https://vk.cc/cO0UaZ" | tee -a "$LOG_FILE"
 echo "https://vk.cc/cO0UaZ" | tee -a "$LOG_FILE"
 echo "https://vk.cc/cO0UaZ" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
-echo "(Р±РѕРЅСѓСЃ 15% РїРѕ СЃСЃС‹Р»РєРµ РІ С‚РµС‡РµРЅРёРё 24 С‡Р°СЃРѕРІ)" | tee -a "$LOG_FILE"
+echo "(бонус 15% по ссылке в течении 24 часов)" | tee -a "$LOG_FILE"
 echo "=================" | tee -a "$LOG_FILE"
-echo "Р РµС„РµСЂР°Р»СЊРЅС‹Рµ СЃСЃС‹Р»РєРё РїРѕРјРѕРіР°СЋС‚ РїСЂРѕРµРєС‚Сѓ. РЎРїР°СЃРёР±Рѕ." | tee -a "$LOG_FILE"
+echo "Реферальные ссылки помогают проекту. Спасибо." | tee -a "$LOG_FILE"

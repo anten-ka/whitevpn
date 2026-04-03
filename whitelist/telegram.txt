@@ -1,0 +1,31 @@
+# WhiteVPN — Белый список: Telegram
+# Эти домены и IP исключаются из блокировки
+# Категория включена по умолчанию
+
+# === Домены Telegram ===
+telegram.org
+t.me
+core.telegram.org
+desktop.telegram.org
+web.telegram.org
+api.telegram.org
+my.telegram.org
+login.telegram.org
+updates.telegram.org
+tdlib.telegram.org
+translate.telegram.org
+
+# === IP-подсети Telegram (AS62041, AS59930, AS62014) ===
+149.154.160.0/20
+91.108.4.0/22
+91.108.8.0/22
+91.108.12.0/22
+91.108.16.0/22
+91.108.20.0/22
+91.108.56.0/22
+95.161.64.0/20
+185.76.151.0/24
+2001:67c:4e8::/48
+2001:b28:f23c::/48
+2001:b28:f23d::/48
+2001:b28:f23f::/48
