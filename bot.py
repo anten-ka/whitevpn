@@ -18,7 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-VERSION = "0.5"
+VERSION = "0.6"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,26 +33,77 @@ WHITELIST_CONF = os.path.join(WHITELIST_DIR, "whitelist.conf")
 LOG_DIR = os.path.join(SYSTEM_DIR, "logs")
 BLOCK_LOG = os.path.join(LOG_DIR, "block_access.log")
 REFERRAL_FILE = os.path.join(LOG_DIR, "referral_shown.json")
+UPDATE_LOG = os.path.join(LOG_DIR, "update_history.json")
 MAX_BLOCK_LOG_SIZE = 30 * 1024 * 1024  # 30MB
+
+# Whitelist source URLs (v2fly community domain lists)
+WL_SOURCES = {
+    "youtube": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/youtube",
+    "telegram": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/telegram",
+}
+
+# Extra YouTube CDN domains that may not be in v2fly list
+YOUTUBE_EXTRA_DOMAINS = [
+    "googlevideo.com",
+    "ytimg.com",
+    "ggpht.com",
+    "youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "youtubei.googleapis.com",
+    "youtube.googleapis.com",
+    "youtube-ui.l.google.com",
+    "ytimg.l.google.com",
+    "ytstatic.l.google.com",
+    "wide-youtube.l.google.com",
+    "youtubeembedded-pa.googleapis.com",
+    "yt-video-upload.l.google.com",
+    "yt3.ggpht.com",
+    "yt4.ggpht.com",
+    "jnn-pa.googleapis.com",
+    "youtube.l.google.com",
+    "withyoutube.com",
+    "youtubekids.com",
+    "youtubeeducation.com",
+    "youtubegaming.com",
+]
+
+TELEGRAM_EXTRA_DOMAINS = [
+    "telegram.org",
+    "t.me",
+    "telegram.me",
+    "core.telegram.org",
+    "api.telegram.org",
+    "web.telegram.org",
+    "desktop.telegram.org",
+    "updates.telegram.org",
+    "static.telegram.org",
+    "cdn.telegram.org",
+    "venus.web.telegram.org",
+    "pluto.web.telegram.org",
+    "flora.web.telegram.org",
+    "vesta.web.telegram.org",
+    "telegram.dog",
+    "telegra.ph",
+    "graph.org",
+    "contest.com",
+    "fragment.com",
+]
 
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(WHITELIST_DIR, exist_ok=True)
 
 BOT_LOG = os.path.join(LOG_DIR, f"bot-{datetime.now().strftime('%Y-%m-%d')}.log")
 
+# === REFERRAL TEXT (fixed: clickable links, all promo codes) ===
 REFERRAL_TEXT = (
-    "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "💰 *Партнёрские предложения:*\n\n"
-    "🖥 *Хостинг №1* — скидка до 60%:\n"
-    "👉 [Перейти](https://vk.cc/ct29NQ)\n"
-    "Промокоды:\n"
-    "• `OFF60` — 60% на первый месяц\n"
-    "• `antenka20` — 20% + 3% за 3 мес.\n"
-    "• `antenka6` — 15% + 5% за 6 мес.\n\n"
-    "🖥 *Хостинг №2* — скидка 60%:\n"
-    "👉 [Перейти](https://vk.cc/cUxAhj)\n"
-    "Промокод: `OFF60` — 60% на первый месяц\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━"
+    "💰 *Партнёрские хостинги*\n\n"
+    "⭐ *Хостинг 1* — [vk.cc/ct29NQ](https://vk.cc/ct29NQ)\n"
+    "  `OFF60` — 60% скидка на первый месяц\n"
+    "  `antenka20` — 20% + 3% за 3 мес\n"
+    "  `antenka6` — 15% + 5% за 6 мес\n\n"
+    "⭐ *Хостинг 2* — [vk.cc/cUxAhj](https://vk.cc/cUxAhj)\n"
+    "  `OFF60` — 60% скидка на первый месяц"
 )
 
 
@@ -69,14 +120,23 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r") as f:
             c = json.load(f)
-        return c.get("BOT_TOKEN", ""), [int(c.get("ADMIN_ID", 0))]
+        admin_raw = c.get("ADMIN_IDS", c.get("ADMIN_ID", 0))
+        if isinstance(admin_raw, list):
+            admins = [int(a) for a in admin_raw]
+        else:
+            admins = [int(admin_raw)]
+        return c.get("BOT_TOKEN", ""), admins
     except Exception as e:
         logger.error(f"Config error: {e}")
         return os.getenv("BOT_TOKEN", ""), [int(os.getenv("ADMIN_ID", "0"))]
 
 
 def load_settings():
-    defaults = {"menu_mode": "inline", "block_log_notify": False}
+    defaults = {
+        "menu_mode": "inline",
+        "block_log_notify": False,
+        "menu_size": "full",  # "full" or "compact"
+    }
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, "r") as f:
@@ -127,6 +187,43 @@ async def is_admin_cb(cb):
         await cb.answer("⛔ Доступ запрещён.", show_alert=True)
         return False
     return True
+
+
+# === UPDATE HISTORY LOG ===
+def log_update_history(update_type, ip_count=0, domain_count=0, wl_updated=False):
+    """Save last 5 update results to JSON."""
+    history = []
+    try:
+        if os.path.exists(UPDATE_LOG):
+            with open(UPDATE_LOG, "r") as f:
+                history = json.load(f)
+    except Exception:
+        history = []
+    entry = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "type": update_type,
+        "ips": ip_count,
+        "domains": domain_count,
+        "whitelist_updated": wl_updated,
+    }
+    history.append(entry)
+    history = history[-5:]  # keep only last 5
+    try:
+        with open(UPDATE_LOG, "w") as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def get_update_history():
+    """Return last 5 update entries."""
+    try:
+        if os.path.exists(UPDATE_LOG):
+            with open(UPDATE_LOG, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
 
 
 # === WHITELIST HELPERS ===
@@ -238,24 +335,72 @@ def export_whitelist():
     return "\n".join(lines)
 
 
+# === WHITELIST UPDATE FROM V2FLY ===
+def update_whitelist_from_sources():
+    """Download fresh YouTube/Telegram domain lists from v2fly and merge with extras."""
+    import urllib.request
+    updated = False
+    for cat, url in WL_SOURCES.items():
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "WhiteVPN/0.6"})
+            resp = urllib.request.urlopen(req, timeout=30)
+            raw = resp.read().decode("utf-8")
+            domains = set()
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # v2fly format: domain lines may have tags like @cn
+                parts = line.split()
+                dom = parts[0]
+                # skip include: directives and regexp: lines
+                if dom.startswith("include:") or dom.startswith("regexp:"):
+                    continue
+                # remove prefix markers (domain:, full:, keyword:)
+                for prefix in ("domain:", "full:", "keyword:"):
+                    if dom.startswith(prefix):
+                        dom = dom[len(prefix):]
+                        break
+                dom = dom.strip().lower()
+                if dom and "." in dom:
+                    domains.add(dom)
+            # Merge extra hardcoded domains
+            extras = YOUTUBE_EXTRA_DOMAINS if cat == "youtube" else TELEGRAM_EXTRA_DOMAINS
+            for d in extras:
+                domains.add(d.lower())
+            # Write file
+            fp = os.path.join(WHITELIST_DIR, f"{cat}.txt")
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(f"# WhiteVPN {cat} whitelist (auto-updated {datetime.now():%Y-%m-%d %H:%M})\n")
+                for d in sorted(domains):
+                    f.write(f"{d}\n")
+            logger.info(f"Whitelist {cat}: {len(domains)} domains")
+            updated = True
+        except Exception as e:
+            logger.error(f"Whitelist update {cat}: {e}")
+    return updated
+
+
 # === SYSTEM STATUS ===
 def get_protection_status():
-    r = subprocess.run(["systemctl", "is-active", "unbound"], capture_output=True, text=True)
+    r = subprocess.run(["systemctl", "is-active", "unbound"], capture_output=True, text=True, timeout=10)
     unbound_ok = r.stdout.strip() == "active"
     r = subprocess.run(
         ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, text=True
+        capture_output=True, text=True, timeout=10
     )
     ipt_ok = r.returncode == 0
     return unbound_ok and ipt_ok
 
 
 def get_ipset_count():
-    r = subprocess.run(["ipset", "list", "blocked_ips", "-t"], capture_output=True, text=True)
+    r = subprocess.run(["ipset", "list", "blocked_ips", "-t"], capture_output=True, text=True, timeout=10)
     if r.returncode == 0:
         for line in r.stdout.splitlines():
             if "Number of entries" in line:
-                return int(line.split(":")[1].strip())
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    return int(parts[1].strip())
     return 0
 
 
@@ -271,19 +416,19 @@ def get_domains_count():
 
 
 def get_xui_status():
-    r = subprocess.run(["systemctl", "is-active", "x-ui"], capture_output=True, text=True)
+    r = subprocess.run(["systemctl", "is-active", "x-ui"], capture_output=True, text=True, timeout=10)
     return r.stdout.strip() == "active"
 
 
 def get_docker_info():
     """Return (containers_list, is_protected)"""
     try:
-        r = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True)
+        r = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=10)
         containers = [c.strip() for c in r.stdout.splitlines() if c.strip()]
     except Exception:
         return [], False
     r2 = subprocess.run(
-        ["iptables", "-L", "DOCKER-USER", "-n"], capture_output=True, text=True
+        ["iptables", "-L", "DOCKER-USER", "-n"], capture_output=True, text=True, timeout=10
     )
     protected = "blocked_ips" in r2.stdout
     return containers, protected
@@ -320,23 +465,22 @@ async def build_status_text():
     dock_s = "🟢" if docker_prot else "🔴"
 
     text = (
-        f"🛡 *WhiteVPN v{VERSION}*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🛡 *WhiteVPN v{VERSION}*\n\n"
         f"*Защита:* {shield}\n"
         f"📊 IP: `{ips}` | Доменов: `{doms}`\n\n"
         f"*Инфраструктура:*\n"
-        f"🖥 3x-ui: {xui_s}\n"
+        f"  🖥 3x-ui: {xui_s}\n"
     )
     if containers:
         c_names = ", ".join(containers)
-        text += f"🐳 Docker: {dock_s} ({len(containers)} шт: {c_names})\n"
+        text += f"  🐳 Docker: {dock_s} ({len(containers)} шт: {c_names})\n"
     else:
-        text += "🐳 Docker: нет контейнеров\n"
+        text += "  🐳 Docker: нет контейнеров\n"
 
     text += (
         f"\n*Белый список:*\n"
-        f"📱 Telegram {tg_s} | 📺 YouTube {yt_s}\n"
-        f"📝 Свой {cu_s} ({custom_cnt} записей)\n\n"
+        f"  📱 Telegram {tg_s} | 📺 YouTube {yt_s}\n"
+        f"  📝 Свой {cu_s} ({custom_cnt} записей)\n\n"
         f"⏱ Uptime: {uptime}"
     )
     return text
@@ -349,27 +493,51 @@ def get_inline_menu():
     shield = "🟢" if prot else "🔴"
     notify = settings.get("block_log_notify", False)
     notify_icon = "🔔" if notify else "🔕"
+    menu_size = settings.get("menu_size", "full")
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{shield} Защита: {'ВКЛ' if prot else 'ВЫКЛ'}", callback_data="toggle_protection")],
-        [InlineKeyboardButton(text="📊 Статус", callback_data="show_status"),
-         InlineKeyboardButton(text="🔄 Обновить списки", callback_data="update_lists")],
-        [InlineKeyboardButton(text="📋 Белый список", callback_data="wl_menu"),
-         InlineKeyboardButton(text="🐳 Docker", callback_data="docker_menu")],
-        [InlineKeyboardButton(text=f"📜 Лог блокировок {notify_icon}", callback_data="block_log_menu"),
-         InlineKeyboardButton(text="🏥 Диагностика", callback_data="health_check")],
-        [InlineKeyboardButton(text="⚙️ Сменить меню", callback_data="switch_menu"),
-         InlineKeyboardButton(text="💰 Партнёры", callback_data="show_referral")],
-    ])
+    if menu_size == "compact":
+        # Compact menu: fewer rows
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{shield} Защита", callback_data="toggle_protection"),
+             InlineKeyboardButton(text="📊 Статус", callback_data="show_status")],
+            [InlineKeyboardButton(text="📋 Списки", callback_data="wl_menu"),
+             InlineKeyboardButton(text="🔄 Обновить", callback_data="update_lists")],
+            [InlineKeyboardButton(text="📐 Раскрыть меню", callback_data="toggle_menu_size"),
+             InlineKeyboardButton(text="⚙️ Тип меню", callback_data="switch_menu")],
+        ])
+    else:
+        # Full menu
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{shield} Защита: {'ВКЛ' if prot else 'ВЫКЛ'}", callback_data="toggle_protection")],
+            [InlineKeyboardButton(text="📊 Статус", callback_data="show_status"),
+             InlineKeyboardButton(text="🔄 Обновить списки", callback_data="update_lists")],
+            [InlineKeyboardButton(text="📋 Белый список", callback_data="wl_menu"),
+             InlineKeyboardButton(text="🐳 Docker", callback_data="docker_menu")],
+            [InlineKeyboardButton(text=f"📜 Лог {notify_icon}", callback_data="block_log_menu"),
+             InlineKeyboardButton(text="🏥 Диагностика", callback_data="health_check")],
+            [InlineKeyboardButton(text="📐 Свернуть меню", callback_data="toggle_menu_size"),
+             InlineKeyboardButton(text="⚙️ Тип меню", callback_data="switch_menu")],
+            [InlineKeyboardButton(text="💰 Партнёры", callback_data="show_referral"),
+             InlineKeyboardButton(text="📈 Обновления", callback_data="show_update_log")],
+        ])
 
 
 def get_reply_menu():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🔄 Обновить списки")],
-        [KeyboardButton(text="🛡 Защита"), KeyboardButton(text="📋 Белый список")],
-        [KeyboardButton(text="🐳 Docker"), KeyboardButton(text="📜 Лог блокировок")],
-        [KeyboardButton(text="🏥 Диагностика"), KeyboardButton(text="⚙️ Сменить меню")],
-    ], resize_keyboard=True, is_persistent=True)
+    settings = load_settings()
+    menu_size = settings.get("menu_size", "full")
+    if menu_size == "compact":
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🛡 Защита")],
+            [KeyboardButton(text="🔄 Обновить"), KeyboardButton(text="⚙️ Сменить меню")],
+        ], resize_keyboard=True, is_persistent=True)
+    else:
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🔄 Обновить списки")],
+            [KeyboardButton(text="🛡 Защита"), KeyboardButton(text="📋 Белый список")],
+            [KeyboardButton(text="🐳 Docker"), KeyboardButton(text="📜 Лог блокировок")],
+            [KeyboardButton(text="🏥 Диагностика"), KeyboardButton(text="⚙️ Сменить меню")],
+            [KeyboardButton(text="📐 Размер меню")],
+        ], resize_keyboard=True, is_persistent=True)
 
 
 def get_wl_menu():
@@ -379,9 +547,9 @@ def get_wl_menu():
     cu = "✅" if cfg["custom"] else "❌"
     cnt = len(get_custom_entries())
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{tg} Telegram", callback_data="wl_toggle_tg"),
-         InlineKeyboardButton(text=f"{yt} YouTube", callback_data="wl_toggle_yt")],
-        [InlineKeyboardButton(text=f"{cu} Свой ({cnt})", callback_data="wl_toggle_custom")],
+        [InlineKeyboardButton(text=f"📱 Telegram {tg}", callback_data="wl_toggle_tg"),
+         InlineKeyboardButton(text=f"📺 YouTube {yt}", callback_data="wl_toggle_yt")],
+        [InlineKeyboardButton(text=f"📝 Свой {cu} ({cnt})", callback_data="wl_toggle_custom")],
         [InlineKeyboardButton(text="➕ Добавить", callback_data="wl_add"),
          InlineKeyboardButton(text="➖ Удалить", callback_data="wl_del")],
         [InlineKeyboardButton(text="📄 Показать", callback_data="wl_show"),
@@ -395,7 +563,7 @@ def get_wl_menu():
 def get_block_log_menu():
     s = load_settings()
     notify = s.get("block_log_notify", False)
-    icon = "🔔 Выкл. уведомления" if notify else "🔕 Вкл. уведомления"
+    icon = "🔔 Выкл уведомл" if notify else "🔕 Вкл уведомл"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📄 Последние записи", callback_data="bl_recent")],
         [InlineKeyboardButton(text=icon, callback_data="bl_toggle_notify")],
@@ -451,7 +619,6 @@ def rotate_block_log():
         if size > MAX_BLOCK_LOG_SIZE:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             os.rename(BLOCK_LOG, os.path.join(LOG_DIR, f"block_access_{ts}.log"))
-        # Clean old logs (>30 days)
         cutoff = time.time() - 30 * 86400
         for f in Path(LOG_DIR).glob("block_access_*.log"):
             if f.stat().st_mtime < cutoff:
@@ -468,8 +635,6 @@ async def monitor_block_log():
         try:
             rotate_block_log()
             new_entries = []
-
-            # iptables LOG entries (WHITEVPN_BLOCK prefix)
             r = await asyncio.to_thread(
                 subprocess.run,
                 ["journalctl", "-k", "--since", last_ts, "--no-pager", "-q"],
@@ -483,8 +648,6 @@ async def monitor_block_log():
                         if src and dst:
                             entry = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLOCKED IP: {src.group(1)} -> {dst.group(1)}\n"
                             new_entries.append(entry)
-
-            # Unbound denied queries
             r2 = await asyncio.to_thread(
                 subprocess.run,
                 ["journalctl", "-u", "unbound", "--since", last_ts, "--no-pager", "-q"],
@@ -497,14 +660,10 @@ async def monitor_block_log():
                         domain = dm.group(1) if dm else "unknown"
                         entry = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLOCKED DNS: {domain}\n"
                         new_entries.append(entry)
-
             last_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
             if new_entries:
                 with open(BLOCK_LOG, "a") as f:
                     f.writelines(new_entries)
-
-                # Auto-notify if enabled
                 s = load_settings()
                 if s.get("block_log_notify", False):
                     summary = "".join(new_entries[-10:])
@@ -519,7 +678,6 @@ async def monitor_block_log():
                             )
                         except Exception:
                             pass
-
             await asyncio.sleep(30)
         except asyncio.CancelledError:
             break
@@ -544,17 +702,14 @@ def get_recent_block_log(n=30):
 
 # === SEND MENU ===
 async def send_main_menu(target, text=None):
-    """Send main menu based on current mode. target can be Message or CallbackQuery."""
     s = load_settings()
     mode = s.get("menu_mode", "inline")
     if text is None:
         text = await build_status_text()
-
     if isinstance(target, CallbackQuery):
         msg = target.message
     else:
         msg = target
-
     if mode == "inline":
         try:
             if isinstance(target, CallbackQuery):
@@ -594,12 +749,12 @@ async def cmd_help(msg: types.Message):
         "/health — диагностика\n"
         "/whitelist — белый список\n\n"
         "*Белый список (3 категории):*\n"
-        "✅ Telegram — по умолчанию ВКЛ\n"
-        "✅ YouTube — по умолчанию ВКЛ\n"
-        "📝 Пользовательский — ваши домены/IP\n\n"
+        "  ✅ Telegram — по умолчанию ВКЛ\n"
+        "  ✅ YouTube — по умолчанию ВКЛ\n"
+        "  📝 Пользовательский — ваши домены/IP\n\n"
         "*Лог блокировок:*\n"
-        "📜 Фиксирует попытки перехода на заблокированные ресурсы\n"
-        "🔔 Можно включить авто-уведомления"
+        "  📜 Фиксирует попытки перехода на запрещённые ресурсы\n"
+        "  🔔 Можно включить авто-уведомления"
     )
     await msg.answer(text, parse_mode="Markdown")
 
@@ -623,11 +778,11 @@ async def cmd_whitelist(msg: types.Message):
     cnt = len(get_custom_entries())
     text = (
         "📋 *Белый список*\n\n"
-        f"📱 Telegram: {tg}\n"
-        f"📺 YouTube: {yt}\n"
-        f"📝 Свой: {cu} ({cnt} записей)\n\n"
-        "⚠️ Добавление доменов снижает уровень защиты.\n"
-        "Ответственность за белый список на пользователе."
+        f"  📱 Telegram: {tg}\n"
+        f"  📺 YouTube: {yt}\n"
+        f"  📝 Свой: {cu} ({cnt} записей)\n\n"
+        "⚠️ Добавление доменов снижает защиту.\n"
+        "Ответственность на пользователе."
     )
     await msg.answer(text, parse_mode="Markdown", reply_markup=get_wl_menu())
 
@@ -642,7 +797,7 @@ async def rk_status(msg: types.Message):
     await maybe_show_referral(msg)
 
 
-@dp.message(F.text == "🔄 Обновить списки")
+@dp.message(F.text.in_({"🔄 Обновить списки", "🔄 Обновить"}))
 async def rk_update(msg: types.Message):
     if not await is_admin(msg):
         return
@@ -688,7 +843,7 @@ async def rk_block_log(msg: types.Message):
     icon = "🔔" if notify else "🔕"
     await msg.answer(
         f"📜 *Лог блокировок* {icon}\n\n"
-        "Здесь фиксируются попытки перехода на заблокированные ресурсы.",
+        "Здесь фиксируются попытки перехода на запрещённые ресурсы.",
         parse_mode="Markdown", reply_markup=get_block_log_menu()
     )
 
@@ -718,6 +873,20 @@ async def rk_switch(msg: types.Message):
     await send_main_menu(msg)
 
 
+@dp.message(F.text == "📐 Размер меню")
+async def rk_toggle_size(msg: types.Message):
+    if not await is_admin(msg):
+        return
+    s = load_settings()
+    current = s.get("menu_size", "full")
+    s["menu_size"] = "compact" if current == "full" else "full"
+    save_settings(s)
+    new = s["menu_size"]
+    label = "компактное" if new == "compact" else "полное"
+    await msg.answer(f"📐 Меню: *{label}*", parse_mode="Markdown")
+    await send_main_menu(msg)
+
+
 # === INLINE CALLBACKS ===
 @dp.callback_query(F.data == "show_status")
 async def cb_status(cb: CallbackQuery):
@@ -730,6 +899,8 @@ async def cb_status(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "back_main")
 async def cb_back_main(cb: CallbackQuery):
+    if not await is_admin_cb(cb):
+        return
     await send_main_menu(cb)
     await cb.answer()
 
@@ -770,30 +941,76 @@ async def cb_confirm_disable(cb: CallbackQuery):
     await cb.answer()
 
 
+@dp.callback_query(F.data == "toggle_menu_size")
+async def cb_toggle_menu_size(cb: CallbackQuery):
+    if not await is_admin_cb(cb):
+        return
+    s = load_settings()
+    current = s.get("menu_size", "full")
+    s["menu_size"] = "compact" if current == "full" else "full"
+    save_settings(s)
+    new = s["menu_size"]
+    label = "компактное" if new == "compact" else "полное"
+    await cb.answer(f"Меню: {label}", show_alert=False)
+    text = await build_status_text()
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=get_inline_menu())
+
+
+@dp.callback_query(F.data == "show_update_log")
+async def cb_show_update_log(cb: CallbackQuery):
+    if not await is_admin_cb(cb):
+        return
+    history = get_update_history()
+    if not history:
+        await cb.message.edit_text(
+            "📈 *История обновлений*\n\nПока нет записей.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
+            ])
+        )
+    else:
+        lines = []
+        for h in history:
+            t = h.get("time", "?")
+            tp = h.get("type", "?")
+            ips = h.get("ips", 0)
+            doms = h.get("domains", 0)
+            wl = "✅" if h.get("whitelist_updated") else "—"
+            lines.append(f"  {t}\n    {tp} | IP: {ips} | Dom: {doms} | WL: {wl}")
+        text = "📈 *Последние 5 обновлений:*\n\n" + "\n\n".join(lines)
+        await cb.message.edit_text(
+            text, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
+            ])
+        )
+    await cb.answer()
+
+
 def enable_protection():
     subprocess.run(["systemctl", "start", "unbound"], capture_output=True, timeout=10)
     with open("/etc/resolv.conf", "w") as f:
         f.write("nameserver 127.0.0.1\n")
-    # iptables: check LOG and DROP before add
     r_log = subprocess.run(
         ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
          "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-        capture_output=True
+        capture_output=True, timeout=10
     )
     if r_log.returncode != 0:
         subprocess.run(
             ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
              "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-            capture_output=True
+            capture_output=True, timeout=10
         )
     r_drop = subprocess.run(
         ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True
+        capture_output=True, timeout=10
     )
     if r_drop.returncode != 0:
         subprocess.run(
             ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-            capture_output=True
+            capture_output=True, timeout=10
         )
     if os.path.exists(DOCKER_RULES):
         subprocess.run(["bash", DOCKER_RULES, "enable"], capture_output=True, timeout=30)
@@ -803,11 +1020,11 @@ def disable_protection():
     subprocess.run(
         ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
          "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-        capture_output=True
+        capture_output=True, timeout=10
     )
     subprocess.run(
         ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True
+        capture_output=True, timeout=10
     )
     subprocess.run(["systemctl", "stop", "unbound"], capture_output=True, timeout=10)
     with open("/etc/resolv.conf", "w") as f:
@@ -829,7 +1046,11 @@ async def cb_update(cb: CallbackQuery):
 async def do_update_lists(msg):
     await msg.answer("🔄 Обновление списков...")
     errors = []
+    ip_count = 0
+    dom_count = 0
     try:
+        # Update whitelist sources first
+        wl_ok = await asyncio.to_thread(update_whitelist_from_sources)
         r1 = await asyncio.to_thread(
             subprocess.run,
             [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-domains", "block_domains.py")],
@@ -844,18 +1065,25 @@ async def do_update_lists(msg):
         )
         if r2.returncode != 0:
             errors.append(f"ips: {r2.stderr[:200]}")
+        ip_count = await asyncio.to_thread(get_ipset_count)
+        dom_count = await asyncio.to_thread(get_domains_count)
     except Exception as e:
         errors.append(str(e))
+        wl_ok = False
+    log_update_history("manual", ip_count, dom_count, wl_ok)
     if errors:
         await msg.answer(f"⚠️ Ошибки:\n`{'  '.join(errors)}`", parse_mode="Markdown")
     else:
-        await msg.answer("✅ Списки обновлены.")
+        await msg.answer(f"✅ Списки обновлены\nIP: {ip_count} | Доменов: {dom_count}")
     log_to_file(f"Lists updated. Errors: {errors}")
 
 
 async def do_update_inline(cb):
     errors = []
+    ip_count = 0
+    dom_count = 0
     try:
+        wl_ok = await asyncio.to_thread(update_whitelist_from_sources)
         r1 = await asyncio.to_thread(
             subprocess.run,
             [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-domains", "block_domains.py")],
@@ -870,14 +1098,18 @@ async def do_update_inline(cb):
         )
         if r2.returncode != 0:
             errors.append(f"ips: {r2.stderr[:200]}")
+        ip_count = await asyncio.to_thread(get_ipset_count)
+        dom_count = await asyncio.to_thread(get_domains_count)
     except Exception as e:
         errors.append(str(e))
+        wl_ok = False
+    log_update_history("manual", ip_count, dom_count, wl_ok)
     if errors:
         await cb.message.edit_text(f"⚠️ Ошибки:\n`{'  '.join(errors)}`",
                                    parse_mode="Markdown", reply_markup=get_inline_menu())
     else:
         text = await build_status_text()
-        await cb.message.edit_text(text + "\n\n✅ Списки обновлены.",
+        await cb.message.edit_text(text + f"\n\n✅ Обновлено | IP: {ip_count} | Dom: {dom_count}",
                                    parse_mode="Markdown", reply_markup=get_inline_menu())
 
 
@@ -923,8 +1155,10 @@ async def cb_wl_menu(cb: CallbackQuery):
     cnt = len(get_custom_entries())
     text = (
         "📋 *Белый список*\n\n"
-        f"📱 Telegram: {tg}\n📺 YouTube: {yt}\n📝 Свой: {cu} ({cnt})\n\n"
-        "⚠️ Ответственность за белый список на пользователе."
+        f"  📱 Telegram: {tg}\n"
+        f"  📺 YouTube: {yt}\n"
+        f"  📝 Свой: {cu} ({cnt})\n\n"
+        "⚠️ Ответственность на пользователе."
     )
     await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=get_wl_menu())
     await cb.answer()
@@ -971,7 +1205,7 @@ async def cb_wl_add(cb: CallbackQuery, state: FSMContext):
         "📝 *Добавление в белый список*\n\n"
         "Отправьте домены/IP, каждый с новой строки.\n"
         "Пример:\n`example.com\n1.2.3.4\n10.0.0.0/24`\n\n"
-        "⚠️ Ответственность за последствия на вас.\n"
+        "⚠️ Ответственность на вас.\n"
         "/cancel для отмены",
         parse_mode="Markdown"
     )
@@ -1001,7 +1235,7 @@ async def fsm_add(msg: types.Message, state: FSMContext):
     if skipped:
         parts.append(f"⚠️ Пропущено: *{len(skipped)}*")
     if parts:
-        parts.append("\n🔄 Обновите списки, чтобы применить.")
+        parts.append("\n🔄 Обновите списки для применения.")
         await msg.answer("\n".join(parts), parse_mode="Markdown")
     else:
         await msg.answer("ℹ️ Нечего добавлять.")
@@ -1040,11 +1274,10 @@ async def fsm_del(msg: types.Message, state: FSMContext):
         if removed:
             await msg.answer(f"✅ Удалено: `{removed}`", parse_mode="Markdown")
         else:
-            await state.clear()
             await msg.answer("❌ Неверный номер.")
     except ValueError:
         await state.clear()
-        await msg.answer("Введите число или /cancel. Попробуйте ещё раз.")
+        await msg.answer("Введите число или /cancel.")
 
 
 @dp.callback_query(F.data == "wl_show")
@@ -1140,7 +1373,7 @@ async def fsm_import(msg: types.Message, state: FSMContext):
         entries = [l.strip() for l in msg.text.split("\n") if l.strip()]
     if not entries:
         await state.clear()
-        await msg.answer("ℹ️ Пустой список. Отменено.")
+        await msg.answer("ℹ️ Пустой список.")
         return
     added, skipped = add_custom_entries(entries)
     await state.clear()
@@ -1243,7 +1476,7 @@ async def cb_block_log(cb: CallbackQuery):
     icon = "🔔" if notify else "🔕"
     await cb.message.edit_text(
         f"📜 *Лог блокировок* {icon}\n\n"
-        "Фиксируются попытки перехода на заблокированные ресурсы\n"
+        "Фиксируются попытки перехода на запрещённые ресурсы\n"
         "и запросы к заблокированным доменам.",
         parse_mode="Markdown", reply_markup=get_block_log_menu()
     )
@@ -1342,6 +1575,12 @@ def build_health_report():
     cu = "✅" if cfg["custom"] else "❌"
     checks.append(f"\n📋 Whitelist: TG{tg} YT{yt} Custom{cu}")
 
+    # Last update info
+    history = get_update_history()
+    if history:
+        last = history[-1]
+        checks.append(f"\n📈 Последнее обновление: {last.get('time', '?')}")
+
     return "🏥 *Диагностика:*\n\n" + "\n".join(checks)
 
 
@@ -1354,7 +1593,7 @@ async def handle_unknown(msg: types.Message):
 
 
 # === BACKGROUND TASKS ===
-AUTO_UPDATE_INTERVAL = 6 * 3600
+AUTO_UPDATE_INTERVAL = 24 * 3600  # once per day
 
 
 async def auto_update_lists():
@@ -1362,6 +1601,8 @@ async def auto_update_lists():
     while True:
         try:
             log_to_file("Auto-update lists...")
+            # Update whitelist sources
+            wl_ok = await asyncio.to_thread(update_whitelist_from_sources)
             r1 = await asyncio.to_thread(
                 subprocess.run,
                 [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-domains", "block_domains.py")],
@@ -1372,18 +1613,23 @@ async def auto_update_lists():
                 [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
                 capture_output=True, text=True, timeout=120
             )
+            ip_count = await asyncio.to_thread(get_ipset_count)
+            dom_count = await asyncio.to_thread(get_domains_count)
             errors = []
             if r1.returncode != 0:
                 errors.append(r1.stderr[:200])
             if r2.returncode != 0:
                 errors.append(r2.stderr[:200])
+            log_update_history("auto", ip_count, dom_count, wl_ok)
             if errors:
                 for aid in ADMIN_IDS:
                     try:
                         await bot.send_message(aid, f"⚠️ Автообновление с ошибками:\n{chr(10).join(errors)}")
                     except Exception:
                         pass
-            log_to_file(f"Auto-update done. Errors: {errors}")
+            log_to_file(f"Auto-update done. IP:{ip_count} Dom:{dom_count} Errors: {errors}")
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             log_to_file(f"Auto-update error: {e}")
         await asyncio.sleep(AUTO_UPDATE_INTERVAL)
@@ -1414,6 +1660,8 @@ async def health_watchdog():
                         await bot.send_message(aid, "🚨 iptables правило НЕ НАЙДЕНО!")
                     except Exception:
                         pass
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             log_to_file(f"Watchdog error: {e}")
         await asyncio.sleep(1800)

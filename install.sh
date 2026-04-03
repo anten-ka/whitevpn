@@ -352,17 +352,17 @@ systemctl enable ipset-restore 2>/dev/null || true
 ok "ipset + iptables настроены"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 9. Настройка бота (токен + admin_id)
+# 9. Настройка бота (опционально)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-log "Настройка Telegram-бота..."
 
 BOT_TOKEN_VAL=""
 ADMIN_ID_VAL=""
+SETUP_BOT=false
 
+# Проверяем сохранённые данные от предыдущей версии
 if [[ -n "$SAVED_TOKEN" ]] && [[ -n "$SAVED_ADMIN" ]]; then
     echo ""
-    echo -e "  ${GREEN}Найдены данные от предыдущей версии:${NC}"
+    echo -e "  ${GREEN}Найдены данные бота от предыдущей версии:${NC}"
     echo -e "  Токен: ${SAVED_TOKEN:0:15}..."
     echo -e "  Admin: $SAVED_ADMIN"
     echo ""
@@ -371,30 +371,183 @@ if [[ -n "$SAVED_TOKEN" ]] && [[ -n "$SAVED_ADMIN" ]]; then
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         BOT_TOKEN_VAL="$SAVED_TOKEN"
         ADMIN_ID_VAL="$SAVED_ADMIN"
+        SETUP_BOT=true
     fi
 fi
 
-if [[ -z "$BOT_TOKEN_VAL" ]]; then
+# Если нет сохранённых данных — предлагаем опционально настроить бота
+if [[ "$SETUP_BOT" != true ]]; then
     echo ""
-    echo -e "  ${YELLOW}Введите данные Telegram-бота:${NC}"
-    echo -e "  (Создайте бота через @BotFather)"
+    echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}Telegram-бот (опционально)${NC}"
+    echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    read -p "  Bot Token: " BOT_TOKEN_VAL
-    read -p "  Admin ID (ваш Telegram ID): " ADMIN_ID_VAL
+    echo -e "  Бот позволяет управлять блокировками прямо из Telegram:"
+    echo -e "  включать/выключать YouTube, Telegram, обновлять списки,"
+    echo -e "  смотреть статус и лог блокировок."
     echo ""
+    echo -e "  Бот не обязателен — всё это доступно через SSH-команду ${GREEN}blockme${NC}."
+    echo ""
+    read -rp "  Хотите настроить Telegram-бота? (y/n): "
+    echo ""
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo ""
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${YELLOW}Инструкция по созданию бота:${NC}"
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  1. Откройте @BotFather в Telegram:"
+        echo -e "     ${GREEN}https://t.me/BotFather${NC}"
+        echo ""
+        echo -e "  2. Отправьте команду /newbot и следуйте инструкциям."
+        echo -e "     Скопируйте полученный API-токен."
+        echo ""
+        echo -e "  3. Чтобы узнать свой Telegram ID, откройте @userinfobot:"
+        echo -e "     ${GREEN}https://t.me/userinfobot${NC}"
+        echo -e "     Отправьте любое сообщение и скопируйте число из ответа."
+        echo ""
+        echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        read -p "  Введите Bot Token: " BOT_TOKEN_VAL
+        echo ""
+
+        if [[ -n "$BOT_TOKEN_VAL" ]]; then
+            echo -e "  ${YELLOW}Определение администратора:${NC}"
+            echo ""
+            echo -e "  Выберите способ:"
+            echo -e "  ${GREEN}1${NC} — Автоматически: бот определит ID из ваших сообщений"
+            echo -e "  ${GREEN}2${NC} — Вручную: ввести Telegram ID через запятую"
+            echo ""
+            read -rp "  Ваш выбор (1/2): " ADMIN_METHOD
+            echo ""
+
+            if [[ "$ADMIN_METHOD" == "1" ]]; then
+                # Автоматическое определение: запускаем временный скрипт
+                echo -e "  ${YELLOW}Запускаю бота для определения администратора...${NC}"
+                echo -e "  Откройте вашего бота в Telegram и отправьте 3 сообщения."
+                echo -e "  Бот определит ваш ID автоматически."
+                echo ""
+
+                # Создаём временный Python-скрипт для определения admin ID
+                DETECT_SCRIPT="${INSTALL_DIR}/detect_admin.py"
+                cat > "$DETECT_SCRIPT" << 'DETECTPY'
+import asyncio
+import sys
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
+
+TOKEN = sys.argv[1]
+messages_received = {}
+required_messages = 3
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+@dp.message()
+async def handle_message(message: types.Message):
+    uid = message.from_user.id
+    uname = message.from_user.full_name
+    messages_received.setdefault(uid, {"name": uname, "count": 0})
+    messages_received[uid]["count"] += 1
+    remaining = required_messages - messages_received[uid]["count"]
+    if remaining > 0:
+        await message.answer(f"Получено! Осталось {remaining} сообщений для подтверждения.")
+    else:
+        await message.answer(f"Отлично! Вы определены как администратор (ID: {uid}).")
+        print(f"ADMIN_DETECTED:{uid}:{uname}")
+        await bot.session.close()
+        sys.exit(0)
+
+async def main():
+    print("WAITING_FOR_MESSAGES")
+    try:
+        await asyncio.wait_for(dp.start_polling(bot), timeout=120)
+    except (asyncio.TimeoutError, SystemExit):
+        await bot.session.close()
+    if messages_received:
+        top = max(messages_received.items(), key=lambda x: x[1]["count"])
+        print(f"ADMIN_DETECTED:{top[0]}:{top[1]['name']}")
+    else:
+        print("NO_MESSAGES")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+DETECTPY
+
+                # Запускаем скрипт определения
+                DETECT_OUTPUT=$("${INSTALL_DIR}/venv/bin/python3" "$DETECT_SCRIPT" "$BOT_TOKEN_VAL" 2>/dev/null)
+                rm -f "$DETECT_SCRIPT"
+
+                if echo "$DETECT_OUTPUT" | grep -q "ADMIN_DETECTED"; then
+                    DETECTED_ID=$(echo "$DETECT_OUTPUT" | grep "ADMIN_DETECTED" | tail -1 | cut -d: -f2)
+                    DETECTED_NAME=$(echo "$DETECT_OUTPUT" | grep "ADMIN_DETECTED" | tail -1 | cut -d: -f3)
+                    echo ""
+                    echo -e "  ${GREEN}Администратор определён:${NC}"
+                    echo -e "  Имя: $DETECTED_NAME"
+                    echo -e "  ID:  $DETECTED_ID"
+                    echo ""
+                    ADMIN_ID_VAL="$DETECTED_ID"
+                    SETUP_BOT=true
+                else
+                    echo ""
+                    echo -e "  ${RED}Не удалось определить администратора автоматически.${NC}"
+                    echo -e "  Введите Telegram ID вручную."
+                    echo ""
+                    read -p "  Admin ID (через запятую, если несколько): " ADMIN_ID_VAL
+                    if [[ -n "$ADMIN_ID_VAL" ]]; then
+                        SETUP_BOT=true
+                    fi
+                fi
+            else
+                # Ручной ввод
+                echo -e "  Узнать свой ID можно у @userinfobot: ${GREEN}https://t.me/userinfobot${NC}"
+                echo ""
+                read -p "  Введите Telegram ID администраторов (через запятую): " ADMIN_ID_VAL
+                if [[ -n "$ADMIN_ID_VAL" ]]; then
+                    SETUP_BOT=true
+                fi
+            fi
+        fi
+    fi
 fi
 
-if [[ -n "$BOT_TOKEN_VAL" ]] && [[ -n "$ADMIN_ID_VAL" ]]; then
-    cat > "$BOT_CONFIG" << BOTCFG
+# Сохраняем конфиг бота
+if [[ "$SETUP_BOT" == true ]] && [[ -n "$BOT_TOKEN_VAL" ]] && [[ -n "$ADMIN_ID_VAL" ]]; then
+    # Проверяем, содержит ли ADMIN_ID_VAL запятую (несколько ID)
+    if [[ "$ADMIN_ID_VAL" == *","* ]]; then
+        # Формируем JSON-массив из списка ID
+        ADMIN_JSON="["
+        IFS=',' read -ra IDS <<< "$ADMIN_ID_VAL"
+        FIRST=true
+        for id in "${IDS[@]}"; do
+            id=$(echo "$id" | tr -d ' ')
+            if [[ "$FIRST" == true ]]; then
+                ADMIN_JSON+="$id"
+                FIRST=false
+            else
+                ADMIN_JSON+=", $id"
+            fi
+        done
+        ADMIN_JSON+="]"
+        cat > "$BOT_CONFIG" << BOTCFG
+{
+  "BOT_TOKEN": "$BOT_TOKEN_VAL",
+  "ADMIN_IDS": $ADMIN_JSON
+}
+BOTCFG
+    else
+        cat > "$BOT_CONFIG" << BOTCFG
 {
   "BOT_TOKEN": "$BOT_TOKEN_VAL",
   "ADMIN_ID": $ADMIN_ID_VAL
 }
 BOTCFG
+    fi
     chmod 600 "$BOT_CONFIG"
     ok "Конфигурация бота сохранена"
 else
-    warn "Бот не настроен (нет токена). Настройте вручную: $BOT_CONFIG"
+    warn "Бот не настроен. Настройте позже вручную: $BOT_CONFIG или перезапустите установку."
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -444,7 +597,7 @@ ExecStart=${INSTALL_DIR}/update_all.sh
 WorkingDirectory=${INSTALL_DIR}
 UPDSVC
 
-# Таймер обновления (каждые 6 часов)
+# Таймер обновления (раз в сутки)
 cat > /etc/systemd/system/whitevpn-update.timer << UPDTMR
 [Unit]
 Description=WhiteVPN Update Timer
@@ -452,7 +605,7 @@ Requires=whitevpn-update.service
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=6h
+OnUnitActiveSec=24h
 Persistent=true
 
 [Install]
@@ -461,17 +614,19 @@ UPDTMR
 
 systemctl daemon-reload
 
-# Запускаем бот
-if [[ -n "$BOT_TOKEN_VAL" ]]; then
+# Запускаем бот (если настроен)
+if [[ "$SETUP_BOT" == true ]] && [[ -n "$BOT_TOKEN_VAL" ]]; then
     systemctl enable block-ips-bot
     systemctl start block-ips-bot
     ok "Бот запущен"
+else
+    log "Бот не настроен — сервис не запущен"
 fi
 
 # Запускаем таймер обновления
 systemctl enable whitevpn-update.timer
 systemctl start whitevpn-update.timer
-ok "Таймер обновления (6ч) запущен"
+ok "Таймер обновления (24ч) запущен"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 11. Команда blockme (SSH-меню)
@@ -519,7 +674,7 @@ cat << SUMMARY
 
   📋 Сервисы:
   • block-ips-bot.service    — Telegram бот
-  • whitevpn-update.timer    — обновление каждые 6ч
+  • whitevpn-update.timer    — обновление раз в сутки
 
   🔗 Партнёрские хостинги:
   • Хостинг #1: vk.cc/ct29NQ
