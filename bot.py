@@ -18,7 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-VERSION = "0.6"
+VERSION = "0.7"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1386,70 +1386,93 @@ async def fsm_import(msg: types.Message, state: FSMContext):
 
 
 # === DOCKER ===
+
+def docker_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 Включить", callback_data="docker_enable"),
+         InlineKeyboardButton(text="🔴 Отключить", callback_data="docker_disable")],
+        [InlineKeyboardButton(text="📊 Статус", callback_data="docker_status")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
+    ])
+
+
+async def docker_status_text(prefix=""):
+    containers, prot = await asyncio.to_thread(get_docker_info)
+    icon = "🟢" if prot else "🔴"
+    c_text = ", ".join(containers) if containers else "нет"
+    header = f"{prefix}\n\n" if prefix else ""
+    return f"{header}🐳 *Docker*\n\nЗащита: {icon}\nКонтейнеры: {c_text}"
+
+
 @dp.callback_query(F.data == "docker_menu")
 async def cb_docker_menu(cb: CallbackQuery):
     if not await is_admin_cb(cb):
         return
-    await do_docker_inline(cb)
+    text = await docker_status_text()
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+    await cb.answer()
 
 
 async def do_docker_menu(msg):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Включить", callback_data="docker_enable"),
-         InlineKeyboardButton(text="🔴 Отключить", callback_data="docker_disable")],
-        [InlineKeyboardButton(text="📊 Статус", callback_data="docker_status")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
-    ])
-    containers, prot = await asyncio.to_thread(get_docker_info)
-    icon = "🟢" if prot else "🔴"
-    c_text = ", ".join(containers) if containers else "нет"
-    await msg.answer(
-        f"🐳 *Docker*\n\nЗащита: {icon}\nКонтейнеры: {c_text}",
-        parse_mode="Markdown", reply_markup=kb
-    )
-
-
-async def do_docker_inline(cb):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Включить", callback_data="docker_enable"),
-         InlineKeyboardButton(text="🔴 Отключить", callback_data="docker_disable")],
-        [InlineKeyboardButton(text="📊 Статус", callback_data="docker_status")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
-    ])
-    containers, prot = await asyncio.to_thread(get_docker_info)
-    icon = "🟢" if prot else "🔴"
-    c_text = ", ".join(containers) if containers else "нет"
-    await cb.message.edit_text(
-        f"🐳 *Docker*\n\nЗащита: {icon}\nКонтейнеры: {c_text}",
-        parse_mode="Markdown", reply_markup=kb
-    )
-    await cb.answer()
+    text = await docker_status_text()
+    await msg.answer(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
 
 
 @dp.callback_query(F.data == "docker_enable")
 async def cb_docker_enable(cb: CallbackQuery):
     if not await is_admin_cb(cb):
         return
-    if os.path.exists(DOCKER_RULES):
-        await asyncio.to_thread(subprocess.run, ["bash", DOCKER_RULES, "enable"],
-                                capture_output=True, timeout=30)
-        await cb.message.edit_text("✅ Docker-защита включена.")
-    else:
-        await cb.message.edit_text("❌ docker_rules.sh не найден.")
+    if not os.path.exists(DOCKER_RULES):
+        text = await docker_status_text("❌ docker\\_rules.sh не найден.")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        await cb.answer()
+        return
+    await cb.message.edit_text("⏳ Настройка Docker-защиты...")
     await cb.answer()
+    try:
+        await asyncio.to_thread(
+            subprocess.run, ["bash", DOCKER_RULES, "auto-setup-confirm"],
+            capture_output=True, timeout=60
+        )
+        await asyncio.to_thread(
+            subprocess.run, ["bash", DOCKER_RULES, "enable"],
+            capture_output=True, timeout=60
+        )
+    except Exception as e:
+        text = await docker_status_text(f"❌ Ошибка: {e}")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        return
+    containers, prot = await asyncio.to_thread(get_docker_info)
+    if prot:
+        prefix = "✅ Docker-защита включена!"
+    else:
+        prefix = "❌ Не удалось включить защиту."
+    text = await docker_status_text(prefix)
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
 
 
 @dp.callback_query(F.data == "docker_disable")
 async def cb_docker_disable(cb: CallbackQuery):
     if not await is_admin_cb(cb):
         return
-    if os.path.exists(DOCKER_RULES):
-        await asyncio.to_thread(subprocess.run, ["bash", DOCKER_RULES, "disable"],
-                                capture_output=True, timeout=30)
-        await cb.message.edit_text("✅ Docker-защита отключена.")
-    else:
-        await cb.message.edit_text("❌ docker_rules.sh не найден.")
+    if not os.path.exists(DOCKER_RULES):
+        text = await docker_status_text("❌ docker\\_rules.sh не найден.")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        await cb.answer()
+        return
+    await cb.message.edit_text("⏳ Отключение Docker-защиты...")
     await cb.answer()
+    await asyncio.to_thread(
+        subprocess.run, ["bash", DOCKER_RULES, "disable"],
+        capture_output=True, timeout=30
+    )
+    containers, prot = await asyncio.to_thread(get_docker_info)
+    if not prot:
+        prefix = "✅ Docker-защита отключена."
+    else:
+        prefix = "⚠️ Docker-защита не полностью отключена."
+    text = await docker_status_text(prefix)
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
 
 
 @dp.callback_query(F.data == "docker_status")
@@ -1459,10 +1482,8 @@ async def cb_docker_status(cb: CallbackQuery):
     containers, prot = await asyncio.to_thread(get_docker_info)
     icon = "🟢 Активна" if prot else "🔴 Неактивна"
     c_text = "\n".join(f"  • {c}" for c in containers) if containers else "  нет"
-    await cb.message.edit_text(
-        f"🐳 *Docker статус:*\n\nЗащита: {icon}\n\nКонтейнеры:\n{c_text}",
-        parse_mode="Markdown"
-    )
+    text = f"🐳 *Docker статус:*\n\nЗащита: {icon}\n\nКонтейнеры:\n{c_text}"
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
     await cb.answer()
 
 
