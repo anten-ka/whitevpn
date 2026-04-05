@@ -6,7 +6,7 @@ import glob
 import re
 from datetime import datetime
 
-VERSION = "0.4"
+VERSION = "0.5"
 
 # Определение директории логов
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -84,6 +84,39 @@ def load_whitelist_domains():
     return whitelist_domains
 
 
+# Домены для принудительной блокировки, когда категория ОТКЛЮЧЕНА в whitelist.
+# Эти домены НЕ входят в Re-filter-lists, поэтому их нужно добавлять явно.
+FORCE_BLOCK_DOMAINS = {
+    "youtube": [
+        "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
+        "youtubei.googleapis.com", "i.ytimg.com", "s.ytimg.com",
+        "youtube-nocookie.com", "youtube-ui.l.google.com",
+        "ytimg.l.google.com", "ytstatic.l.google.com",
+        "wide-youtube.l.google.com", "youtubeembedded-pa.googleapis.com",
+        "yt-video-upload.l.google.com", "yt3.ggpht.com", "yt4.ggpht.com",
+        "jnn-pa.googleapis.com", "youtube.l.google.com",
+        "withyoutube.com", "youtubekids.com", "youtubeeducation.com",
+        "youtubegaming.com",
+    ],
+    "telegram": [
+        "telegram.org", "web.telegram.org", "desktop.telegram.org",
+        "t.me", "telegram.me",
+    ],
+}
+
+
+def load_force_block_domains(config):
+    """Если категория whitelist ОТКЛЮЧЕНА, вернуть домены для принудительной блокировки."""
+    force_domains = set()
+    for cat_name, domains in FORCE_BLOCK_DOMAINS.items():
+        if not config.get(cat_name, True):
+            # Категория отключена → добавляем домены в блокировку
+            for d in domains:
+                force_domains.add(d.lower())
+            log_to_file(f"Категория '{cat_name}' отключена → добавлено {len(domains)} доменов в блокировку")
+    return force_domains
+
+
 def get_latest_release_url():
     """Получить URL последнего релиза Re-filter-lists через GitHub API."""
     api_url = "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest"
@@ -125,8 +158,10 @@ def fetch_and_block_domains():
         log_to_file(error_msg)
         return
 
-    # Загрузка белого списка
+    # Загрузка белого списка и конфигурации
+    config = load_whitelist_config()
     whitelist = load_whitelist_domains()
+    force_block = load_force_block_domains(config)
 
     try:
         log_to_file(f"Загрузка списка доменов: {url}")
@@ -163,6 +198,13 @@ def fetch_and_block_domains():
 
     log_to_file(f"Исключено из блокировки (whitelist): {whitelisted_count} доменов")
     log_to_file(f"Осталось для блокировки: {len(filtered_domains)} доменов (было {blocked_count_before})")
+
+    # Принудительная блокировка доменов для отключённых категорий
+    if force_block:
+        before_force = len(filtered_domains)
+        filtered_domains.update(force_block)
+        added = len(filtered_domains) - before_force
+        log_to_file(f"Добавлено принудительно (force-block): {added} новых доменов")
 
     try:
         # Атомарная запись: сначала во временный файл, потом rename
