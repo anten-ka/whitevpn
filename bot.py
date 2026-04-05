@@ -1046,8 +1046,9 @@ def enable_protection():
     _setup_dns_dnat()
 
 
-def _setup_dns_dnat():
-    """Add iptables DNAT rules to redirect Docker container DNS to Unbound."""
+def _get_docker_subnets():
+    """Return list of (subnet, gateway) for all Docker networks."""
+    result = []
     try:
         r = subprocess.run(["docker", "network", "ls", "--format", "{{.Name}}"],
                            capture_output=True, text=True, timeout=10)
@@ -1064,27 +1065,59 @@ def _setup_dns_dnat():
                 if "|" in part:
                     subnet, gw = part.split("|", 1)
                     if subnet and gw:
-                        for proto in ["udp", "tcp"]:
-                            chk = subprocess.run(
-                                ["iptables", "-t", "nat", "-C", "PREROUTING",
-                                 "-s", subnet, "-p", proto, "--dport", "53",
-                                 "!", "-d", "127.0.0.1",
-                                 "-j", "DNAT", "--to-destination", f"{gw}:53"],
-                                capture_output=True, timeout=10
-                            )
-                            if chk.returncode != 0:
-                                subprocess.run(
-                                    ["iptables", "-t", "nat", "-I", "PREROUTING",
-                                     "-s", subnet, "-p", proto, "--dport", "53",
-                                     "!", "-d", "127.0.0.1",
-                                     "-j", "DNAT", "--to-destination", f"{gw}:53"],
-                                    capture_output=True, timeout=10
-                                )
+                        result.append((subnet, gw))
+    except Exception:
+        logger.warning("Failed to get Docker subnets")
+    return result
+
+
+def _setup_dns_dnat():
+    """Add iptables DNAT rules to redirect Docker container DNS to Unbound."""
+    try:
+        for subnet, gw in _get_docker_subnets():
+            for proto in ["udp", "tcp"]:
+                chk = subprocess.run(
+                    ["iptables", "-t", "nat", "-C", "PREROUTING",
+                     "-s", subnet, "-p", proto, "--dport", "53",
+                     "!", "-d", "127.0.0.1",
+                     "-j", "DNAT", "--to-destination", f"{gw}:53"],
+                    capture_output=True, timeout=10
+                )
+                if chk.returncode != 0:
+                    subprocess.run(
+                        ["iptables", "-t", "nat", "-I", "PREROUTING",
+                         "-s", subnet, "-p", proto, "--dport", "53",
+                         "!", "-d", "127.0.0.1",
+                         "-j", "DNAT", "--to-destination", f"{gw}:53"],
+                        capture_output=True, timeout=10
+                    )
     except Exception:
         logger.warning("DNS DNAT setup failed")
 
 
+def _remove_dns_dnat():
+    """Remove all DNAT rules that redirect Docker container DNS to Unbound."""
+    try:
+        for subnet, gw in _get_docker_subnets():
+            for proto in ["udp", "tcp"]:
+                # Try removing up to 3 times in case of duplicates
+                for _ in range(3):
+                    r = subprocess.run(
+                        ["iptables", "-t", "nat", "-D", "PREROUTING",
+                         "-s", subnet, "-p", proto, "--dport", "53",
+                         "!", "-d", "127.0.0.1",
+                         "-j", "DNAT", "--to-destination", f"{gw}:53"],
+                        capture_output=True, timeout=10
+                    )
+                    if r.returncode != 0:
+                        break  # Rule doesn't exist, stop
+    except Exception:
+        logger.warning("DNS DNAT removal failed")
+
+
 def disable_protection():
+    # Remove DNAT rules FIRST (before stopping Unbound, so containers don't lose DNS)
+    _remove_dns_dnat()
     subprocess.run(
         ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
          "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
@@ -1540,10 +1573,17 @@ async def cb_docker_disable(cb: CallbackQuery):
         return
     await cb.message.edit_text("⏳ Отключение Docker-защиты...")
     await cb.answer()
-    await asyncio.to_thread(
-        subprocess.run, ["bash", DOCKER_RULES, "disable"],
-        capture_output=True, timeout=30
-    )
+    try:
+        # Remove DNAT rules first so containers get normal DNS
+        await asyncio.to_thread(_remove_dns_dnat)
+        await asyncio.to_thread(
+            subprocess.run, ["bash", DOCKER_RULES, "disable"],
+            capture_output=True, timeout=30
+        )
+    except Exception as e:
+        text = await docker_status_text(f"❌ Ошибка: {e}")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        return
     containers, prot = await asyncio.to_thread(get_docker_info)
     if not prot:
         prefix = "✅ Docker-защита отключена."
