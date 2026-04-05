@@ -404,6 +404,9 @@ def get_ipset_count():
     return 0
 
 
+MAX_UNBOUND_DOMAINS = 50000  # Unbound hangs with 80K+ on 2GB VPS
+
+
 def get_domains_count():
     p = "/etc/unbound/blocked-domains.conf"
     if os.path.exists(p):
@@ -413,6 +416,22 @@ def get_domains_count():
         except Exception:
             pass
     return 0
+
+
+def trim_blocked_domains():
+    """Trim blocked-domains.conf to MAX_UNBOUND_DOMAINS to prevent Unbound from hanging."""
+    p = "/etc/unbound/blocked-domains.conf"
+    if not os.path.exists(p):
+        return
+    try:
+        with open(p, "r") as f:
+            lines = f.readlines()
+        if len(lines) > MAX_UNBOUND_DOMAINS:
+            with open(p, "w") as f:
+                f.writelines(lines[:MAX_UNBOUND_DOMAINS])
+            logger.info(f"Trimmed blocked-domains.conf from {len(lines)} to {MAX_UNBOUND_DOMAINS}")
+    except Exception:
+        pass
 
 
 def get_xui_status():
@@ -427,10 +446,13 @@ def get_docker_info():
         containers = [c.strip() for c in r.stdout.splitlines() if c.strip()]
     except Exception:
         return [], False
-    r2 = subprocess.run(
-        ["iptables", "-L", "DOCKER-USER", "-n"], capture_output=True, text=True, timeout=10
-    )
-    protected = "blocked_ips" in r2.stdout
+    try:
+        r2 = subprocess.run(
+            ["iptables", "-L", "DOCKER-USER", "-n"], capture_output=True, text=True, timeout=10
+        )
+        protected = "DROP" in r2.stdout and "blocked_ips" in r2.stdout
+    except Exception:
+        protected = False
     return containers, protected
 
 
@@ -1013,7 +1035,53 @@ def enable_protection():
             capture_output=True, timeout=10
         )
     if os.path.exists(DOCKER_RULES):
-        subprocess.run(["bash", DOCKER_RULES, "enable"], capture_output=True, timeout=30)
+        try:
+            subprocess.run(["bash", DOCKER_RULES, "auto-setup-confirm"],
+                           capture_output=True, timeout=60)
+            subprocess.run(["bash", DOCKER_RULES, "enable"],
+                           capture_output=True, timeout=30)
+        except Exception:
+            logger.warning("docker_rules.sh enable failed")
+    # Ensure DNS DNAT for Docker containers
+    _setup_dns_dnat()
+
+
+def _setup_dns_dnat():
+    """Add iptables DNAT rules to redirect Docker container DNS to Unbound."""
+    try:
+        r = subprocess.run(["docker", "network", "ls", "--format", "{{.Name}}"],
+                           capture_output=True, text=True, timeout=10)
+        for net_name in r.stdout.splitlines():
+            net_name = net_name.strip()
+            if not net_name or net_name in ("host", "none"):
+                continue
+            r2 = subprocess.run(
+                ["docker", "network", "inspect", "--format",
+                 "{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}", net_name],
+                capture_output=True, text=True, timeout=10
+            )
+            for part in r2.stdout.strip().split():
+                if "|" in part:
+                    subnet, gw = part.split("|", 1)
+                    if subnet and gw:
+                        for proto in ["udp", "tcp"]:
+                            chk = subprocess.run(
+                                ["iptables", "-t", "nat", "-C", "PREROUTING",
+                                 "-s", subnet, "-p", proto, "--dport", "53",
+                                 "!", "-d", "127.0.0.1",
+                                 "-j", "DNAT", "--to-destination", f"{gw}:53"],
+                                capture_output=True, timeout=10
+                            )
+                            if chk.returncode != 0:
+                                subprocess.run(
+                                    ["iptables", "-t", "nat", "-I", "PREROUTING",
+                                     "-s", subnet, "-p", proto, "--dport", "53",
+                                     "!", "-d", "127.0.0.1",
+                                     "-j", "DNAT", "--to-destination", f"{gw}:53"],
+                                    capture_output=True, timeout=10
+                                )
+    except Exception:
+        logger.warning("DNS DNAT setup failed")
 
 
 def disable_protection():
@@ -1030,7 +1098,11 @@ def disable_protection():
     with open("/etc/resolv.conf", "w") as f:
         f.write("nameserver 8.8.8.8\n")
     if os.path.exists(DOCKER_RULES):
-        subprocess.run(["bash", DOCKER_RULES, "disable"], capture_output=True, timeout=30)
+        try:
+            subprocess.run(["bash", DOCKER_RULES, "disable"],
+                           capture_output=True, timeout=30)
+        except Exception:
+            logger.warning("docker_rules.sh disable failed")
 
 
 # === UPDATE LISTS ===
@@ -1058,6 +1130,9 @@ async def do_update_lists(msg):
         )
         if r1.returncode != 0:
             errors.append(f"domains: {r1.stderr[:200]}")
+        await asyncio.to_thread(trim_blocked_domains)
+        subprocess.run(["systemctl", "restart", "unbound"],
+                        capture_output=True, timeout=30)
         r2 = await asyncio.to_thread(
             subprocess.run,
             [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
@@ -1091,6 +1166,9 @@ async def do_update_inline(cb):
         )
         if r1.returncode != 0:
             errors.append(f"domains: {r1.stderr[:200]}")
+        await asyncio.to_thread(trim_blocked_domains)
+        subprocess.run(["systemctl", "restart", "unbound"],
+                        capture_output=True, timeout=30)
         r2 = await asyncio.to_thread(
             subprocess.run,
             [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
@@ -1629,6 +1707,9 @@ async def auto_update_lists():
                 [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-domains", "block_domains.py")],
                 capture_output=True, text=True, timeout=120
             )
+            await asyncio.to_thread(trim_blocked_domains)
+            subprocess.run(["systemctl", "restart", "unbound"],
+                            capture_output=True, timeout=30)
             r2 = await asyncio.to_thread(
                 subprocess.run,
                 [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
