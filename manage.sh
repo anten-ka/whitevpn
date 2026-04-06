@@ -1,5 +1,5 @@
 #!/bin/bash
-VERSION="0.5"
+VERSION="0.7"
 
 if [ "$EUID" -ne 0 ]; then
   echo -e "\033[31m[!] Запустите скрипт от root: sudo blockme\033[0m"
