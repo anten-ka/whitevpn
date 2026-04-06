@@ -6,7 +6,7 @@ import glob
 import re
 from datetime import datetime
 
-VERSION = "0.5"
+VERSION = "0.7"
 
 # Определение директории логов
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
