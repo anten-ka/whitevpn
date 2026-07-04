@@ -18,7 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-VERSION = "0.6"
+VERSION = "0.9"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,8 @@ CONFIG_FILE = "/etc/block-ips/bot_config.json"
 SETTINGS_FILE = "/opt/block-traffic/bot_settings.json"
 SYSTEM_DIR = "/opt/block-traffic"
 DOCKER_RULES = os.path.join(SYSTEM_DIR, "docker_rules.sh")
+APPLY_FIREWALL = os.path.join(SYSTEM_DIR, "apply_firewall.sh")
+STATE_FILE = "/etc/block-ips/protection_state"
 VENV_PYTHON = os.path.join(SYSTEM_DIR, "venv", "bin", "python3")
 WHITELIST_DIR = os.path.join(SYSTEM_DIR, "whitelist")
 WHITELIST_CONF = os.path.join(WHITELIST_DIR, "whitelist.conf")
@@ -368,12 +370,28 @@ def update_whitelist_from_sources():
             extras = YOUTUBE_EXTRA_DOMAINS if cat == "youtube" else TELEGRAM_EXTRA_DOMAINS
             for d in extras:
                 domains.add(d.lower())
-            # Write file
+            # Write file — СОХРАНЯЯ IP/подсети из старого файла
             fp = os.path.join(WHITELIST_DIR, f"{cat}.txt")
+            ip_lines = []
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        try:
+                            ipaddress.ip_network(line, strict=False)
+                            ip_lines.append(line)
+                        except ValueError:
+                            pass
             with open(fp, "w", encoding="utf-8") as f:
                 f.write(f"# WhiteVPN {cat} whitelist (auto-updated {datetime.now():%Y-%m-%d %H:%M})\n")
                 for d in sorted(domains):
                     f.write(f"{d}\n")
+                if ip_lines:
+                    f.write("\n# === IP/подсети ===\n")
+                    for ip in ip_lines:
+                        f.write(f"{ip}\n")
             logger.info(f"Whitelist {cat}: {len(domains)} domains")
             updated = True
         except Exception as e:
@@ -404,6 +422,9 @@ def get_ipset_count():
     return 0
 
 
+MAX_UNBOUND_DOMAINS = 100000  # 79k зон на 2ГБ = ~43МБ RAM (проверено)
+
+
 def get_domains_count():
     p = "/etc/unbound/blocked-domains.conf"
     if os.path.exists(p):
@@ -413,6 +434,22 @@ def get_domains_count():
         except Exception:
             pass
     return 0
+
+
+def trim_blocked_domains():
+    """Trim blocked-domains.conf to MAX_UNBOUND_DOMAINS to prevent Unbound from hanging."""
+    p = "/etc/unbound/blocked-domains.conf"
+    if not os.path.exists(p):
+        return
+    try:
+        with open(p, "r") as f:
+            lines = f.readlines()
+        if len(lines) > MAX_UNBOUND_DOMAINS:
+            with open(p, "w") as f:
+                f.writelines(lines[:MAX_UNBOUND_DOMAINS])
+            logger.info(f"Trimmed blocked-domains.conf from {len(lines)} to {MAX_UNBOUND_DOMAINS}")
+    except Exception:
+        pass
 
 
 def get_xui_status():
@@ -427,10 +464,13 @@ def get_docker_info():
         containers = [c.strip() for c in r.stdout.splitlines() if c.strip()]
     except Exception:
         return [], False
-    r2 = subprocess.run(
-        ["iptables", "-L", "DOCKER-USER", "-n"], capture_output=True, text=True, timeout=10
-    )
-    protected = "blocked_ips" in r2.stdout
+    try:
+        r2 = subprocess.run(
+            ["iptables", "-L", "DOCKER-USER", "-n"], capture_output=True, text=True, timeout=10
+        )
+        protected = "DROP" in r2.stdout and "blocked_ips" in r2.stdout
+    except Exception:
+        protected = False
     return containers, protected
 
 
@@ -655,9 +695,12 @@ async def monitor_block_log():
             )
             if r2.returncode == 0:
                 for line in r2.stdout.splitlines():
-                    if "deny" in line.lower() or "refused" in line.lower():
-                        dm = re.search(r'info: ([^\s]+)', line)
-                        domain = dm.group(1) if dm else "unknown"
+                    # log-local-actions: "info: local-zone <zone> <action> <qname> <qtype> <qclass>"
+                    dm = re.search(
+                        r'local-zone ([^\s]+)\.? (?:always_nxdomain|deny|refuse)(?: ([^\s]+)\.)?',
+                        line)
+                    if dm:
+                        domain = (dm.group(2) or dm.group(1)).rstrip(".")
                         entry = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLOCKED DNS: {domain}\n"
                         new_entries.append(entry)
             last_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -989,48 +1032,31 @@ async def cb_show_update_log(cb: CallbackQuery):
 
 
 def enable_protection():
-    subprocess.run(["systemctl", "start", "unbound"], capture_output=True, timeout=10)
-    with open("/etc/resolv.conf", "w") as f:
-        f.write("nameserver 127.0.0.1\n")
-    r_log = subprocess.run(
-        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
-         "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-        capture_output=True, timeout=10
-    )
-    if r_log.returncode != 0:
-        subprocess.run(
-            ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
-             "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-            capture_output=True, timeout=10
-        )
-    r_drop = subprocess.run(
-        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, timeout=10
-    )
-    if r_drop.returncode != 0:
-        subprocess.run(
-            ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-            capture_output=True, timeout=10
-        )
-    if os.path.exists(DOCKER_RULES):
-        subprocess.run(["bash", DOCKER_RULES, "enable"], capture_output=True, timeout=30)
+    """Включить защиту: вся логика правил — в apply_firewall.sh (единая точка)."""
+    subprocess.run(["bash", APPLY_FIREWALL, "up"], capture_output=True, timeout=120)
+    # Если Docker есть, а контейнеры ещё не выбраны — автонастройка
+    if os.path.exists(DOCKER_RULES) and not os.path.exists("/etc/block-ips/docker_containers.conf"):
+        try:
+            r = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                subprocess.run(["bash", DOCKER_RULES, "auto-setup-confirm"],
+                               capture_output=True, timeout=180)
+                subprocess.run(["bash", APPLY_FIREWALL, "up"], capture_output=True, timeout=60)
+        except Exception:
+            logger.warning("docker auto-setup failed")
 
 
 def disable_protection():
-    subprocess.run(
-        ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
-         "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-        capture_output=True, timeout=10
-    )
-    subprocess.run(
-        ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, timeout=10
-    )
-    subprocess.run(["systemctl", "stop", "unbound"], capture_output=True, timeout=10)
-    with open("/etc/resolv.conf", "w") as f:
-        f.write("nameserver 8.8.8.8\n")
-    if os.path.exists(DOCKER_RULES):
-        subprocess.run(["bash", DOCKER_RULES, "disable"], capture_output=True, timeout=30)
+    subprocess.run(["bash", APPLY_FIREWALL, "down"], capture_output=True, timeout=120)
+
+
+def protection_intended():
+    """Защита должна быть включена? (state-файл пишет apply_firewall.sh)"""
+    try:
+        with open(STATE_FILE) as f:
+            return "disabled" not in f.read()
+    except IOError:
+        return True
 
 
 # === UPDATE LISTS ===
@@ -1386,70 +1412,99 @@ async def fsm_import(msg: types.Message, state: FSMContext):
 
 
 # === DOCKER ===
+
+def docker_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 Включить", callback_data="docker_enable"),
+         InlineKeyboardButton(text="🔴 Отключить", callback_data="docker_disable")],
+        [InlineKeyboardButton(text="📊 Статус", callback_data="docker_status")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
+    ])
+
+
+async def docker_status_text(prefix=""):
+    containers, prot = await asyncio.to_thread(get_docker_info)
+    icon = "🟢" if prot else "🔴"
+    c_text = ", ".join(containers) if containers else "нет"
+    header = f"{prefix}\n\n" if prefix else ""
+    return f"{header}🐳 *Docker*\n\nЗащита: {icon}\nКонтейнеры: {c_text}"
+
+
 @dp.callback_query(F.data == "docker_menu")
 async def cb_docker_menu(cb: CallbackQuery):
     if not await is_admin_cb(cb):
         return
-    await do_docker_inline(cb)
+    text = await docker_status_text()
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+    await cb.answer()
 
 
 async def do_docker_menu(msg):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Включить", callback_data="docker_enable"),
-         InlineKeyboardButton(text="🔴 Отключить", callback_data="docker_disable")],
-        [InlineKeyboardButton(text="📊 Статус", callback_data="docker_status")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
-    ])
-    containers, prot = await asyncio.to_thread(get_docker_info)
-    icon = "🟢" if prot else "🔴"
-    c_text = ", ".join(containers) if containers else "нет"
-    await msg.answer(
-        f"🐳 *Docker*\n\nЗащита: {icon}\nКонтейнеры: {c_text}",
-        parse_mode="Markdown", reply_markup=kb
-    )
-
-
-async def do_docker_inline(cb):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Включить", callback_data="docker_enable"),
-         InlineKeyboardButton(text="🔴 Отключить", callback_data="docker_disable")],
-        [InlineKeyboardButton(text="📊 Статус", callback_data="docker_status")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
-    ])
-    containers, prot = await asyncio.to_thread(get_docker_info)
-    icon = "🟢" if prot else "🔴"
-    c_text = ", ".join(containers) if containers else "нет"
-    await cb.message.edit_text(
-        f"🐳 *Docker*\n\nЗащита: {icon}\nКонтейнеры: {c_text}",
-        parse_mode="Markdown", reply_markup=kb
-    )
-    await cb.answer()
+    text = await docker_status_text()
+    await msg.answer(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
 
 
 @dp.callback_query(F.data == "docker_enable")
 async def cb_docker_enable(cb: CallbackQuery):
     if not await is_admin_cb(cb):
         return
-    if os.path.exists(DOCKER_RULES):
-        await asyncio.to_thread(subprocess.run, ["bash", DOCKER_RULES, "enable"],
-                                capture_output=True, timeout=30)
-        await cb.message.edit_text("✅ Docker-защита включена.")
-    else:
-        await cb.message.edit_text("❌ docker_rules.sh не найден.")
+    if not os.path.exists(DOCKER_RULES):
+        text = await docker_status_text("❌ docker\\_rules.sh не найден.")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        await cb.answer()
+        return
+    await cb.message.edit_text("⏳ Настройка Docker-защиты...")
     await cb.answer()
+    try:
+        await asyncio.to_thread(
+            subprocess.run, ["bash", DOCKER_RULES, "auto-setup-confirm"],
+            capture_output=True, timeout=60
+        )
+        await asyncio.to_thread(
+            subprocess.run, ["bash", DOCKER_RULES, "enable"],
+            capture_output=True, timeout=60
+        )
+    except Exception as e:
+        text = await docker_status_text(f"❌ Ошибка: {e}")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        return
+    containers, prot = await asyncio.to_thread(get_docker_info)
+    if prot:
+        prefix = "✅ Docker-защита включена!"
+    else:
+        prefix = "❌ Не удалось включить защиту."
+    text = await docker_status_text(prefix)
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
 
 
 @dp.callback_query(F.data == "docker_disable")
 async def cb_docker_disable(cb: CallbackQuery):
     if not await is_admin_cb(cb):
         return
-    if os.path.exists(DOCKER_RULES):
-        await asyncio.to_thread(subprocess.run, ["bash", DOCKER_RULES, "disable"],
-                                capture_output=True, timeout=30)
-        await cb.message.edit_text("✅ Docker-защита отключена.")
-    else:
-        await cb.message.edit_text("❌ docker_rules.sh не найден.")
+    if not os.path.exists(DOCKER_RULES):
+        text = await docker_status_text("❌ docker\\_rules.sh не найден.")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        await cb.answer()
+        return
+    await cb.message.edit_text("⏳ Отключение Docker-защиты...")
     await cb.answer()
+    try:
+        # docker_rules.sh disable убирает и DOCKER-USER, и DNAT :53
+        await asyncio.to_thread(
+            subprocess.run, ["bash", DOCKER_RULES, "disable"],
+            capture_output=True, timeout=30
+        )
+    except Exception as e:
+        text = await docker_status_text(f"❌ Ошибка: {e}")
+        await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
+        return
+    containers, prot = await asyncio.to_thread(get_docker_info)
+    if not prot:
+        prefix = "✅ Docker-защита отключена."
+    else:
+        prefix = "⚠️ Docker-защита не полностью отключена."
+    text = await docker_status_text(prefix)
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
 
 
 @dp.callback_query(F.data == "docker_status")
@@ -1459,10 +1514,8 @@ async def cb_docker_status(cb: CallbackQuery):
     containers, prot = await asyncio.to_thread(get_docker_info)
     icon = "🟢 Активна" if prot else "🔴 Неактивна"
     c_text = "\n".join(f"  • {c}" for c in containers) if containers else "  нет"
-    await cb.message.edit_text(
-        f"🐳 *Docker статус:*\n\nЗащита: {icon}\n\nКонтейнеры:\n{c_text}",
-        parse_mode="Markdown"
-    )
+    text = f"🐳 *Docker статус:*\n\nЗащита: {icon}\n\nКонтейнеры:\n{c_text}"
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=docker_menu_kb())
     await cb.answer()
 
 
@@ -1593,52 +1646,13 @@ async def handle_unknown(msg: types.Message):
 
 
 # === BACKGROUND TASKS ===
-AUTO_UPDATE_INTERVAL = 24 * 3600  # once per day
-
-
-async def auto_update_lists():
-    await asyncio.sleep(60)
-    while True:
-        try:
-            log_to_file("Auto-update lists...")
-            # Update whitelist sources
-            wl_ok = await asyncio.to_thread(update_whitelist_from_sources)
-            r1 = await asyncio.to_thread(
-                subprocess.run,
-                [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-domains", "block_domains.py")],
-                capture_output=True, text=True, timeout=120
-            )
-            r2 = await asyncio.to_thread(
-                subprocess.run,
-                [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
-                capture_output=True, text=True, timeout=120
-            )
-            ip_count = await asyncio.to_thread(get_ipset_count)
-            dom_count = await asyncio.to_thread(get_domains_count)
-            errors = []
-            if r1.returncode != 0:
-                errors.append(r1.stderr[:200])
-            if r2.returncode != 0:
-                errors.append(r2.stderr[:200])
-            log_update_history("auto", ip_count, dom_count, wl_ok)
-            if errors:
-                for aid in ADMIN_IDS:
-                    try:
-                        await bot.send_message(aid, f"⚠️ Автообновление с ошибками:\n{chr(10).join(errors)}")
-                    except Exception:
-                        pass
-            log_to_file(f"Auto-update done. IP:{ip_count} Dom:{dom_count} Errors: {errors}")
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            log_to_file(f"Auto-update error: {e}")
-        await asyncio.sleep(AUTO_UPDATE_INTERVAL)
-
-
 async def health_watchdog():
     await asyncio.sleep(300)
     while True:
         try:
+            if not protection_intended():
+                await asyncio.sleep(1800)
+                continue
             r = await asyncio.to_thread(
                 subprocess.run, ["systemctl", "is-active", "unbound"],
                 capture_output=True, text=True, timeout=5
@@ -1672,7 +1686,6 @@ async def main():
     logger.info(f"WhiteVPN Bot v{VERSION} starting...")
     log_to_file(f"Bot started (v{VERSION})")
     tasks = [
-        asyncio.create_task(auto_update_lists()),
         asyncio.create_task(health_watchdog()),
         asyncio.create_task(monitor_block_log()),
     ]

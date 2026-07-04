@@ -1,59 +1,64 @@
 #!/bin/bash
 # ============================================================================
-# docker_rules.sh — Управление iptables/DNS-блокировкой для Docker-контейнеров
-# Часть проекта WhiteVPN (расширение для Docker/AmneziaWG)
+# docker_rules.sh вЂ” СѓРїСЂР°РІР»РµРЅРёРµ iptables/DNS-Р±Р»РѕРєРёСЂРѕРІРєРѕР№ РґР»СЏ Docker-РєРѕРЅС‚РµР№РЅРµСЂРѕРІ
+# Р§Р°СЃС‚СЊ РїСЂРѕРµРєС‚Р° WhiteVPN (Р±Р»РѕРєРёСЂРѕРІРєР° РґР»СЏ Docker/AmneziaWG)
 #
-# Команды:
-#   scan              — сканирование контейнеров (человекочитаемый вывод)
-#   scan-json         — сканирование (JSON, для бота)
-#   auto-setup        — автонастройка (интерактивно, с подтверждением)
-#   auto-setup-confirm — автонастройка без подтверждения (для бота)
-#   select            — выбрать контейнеры вручную (интерактивно)
-#   list-containers   — список контейнеров (JSON)
-#   select-by-name    — выбрать контейнеры по имени
-#   enable            — включить блокировку
-#   disable           — отключить блокировку
-#   status            — статус блокировки
-#   apply-ipt         — только iptables
-#   remove-ipt        — удалить iptables
-#   unbound-on        — настроить Unbound для Docker
-#   unbound-off       — убрать Docker из Unbound
-#   dns-on            — настроить DNS Docker-демона
-#   dns-off           — вернуть DNS по умолчанию
-#   cleanup           — полная очистка
+# РљРѕРјР°РЅРґС‹:
+#   scan               вЂ” СЃРєР°РЅРёСЂРѕРІР°РЅРёРµ РєРѕРЅС‚РµР№РЅРµСЂРѕРІ (С‡РµР»РѕРІРµРєРѕС‡РёС‚Р°РµРјС‹Р№ РІС‹РІРѕРґ)
+#   scan-json          вЂ” СЃРєР°РЅРёСЂРѕРІР°РЅРёРµ (JSON, РґР»СЏ Р±РѕС‚Р°)
+#   auto-setup         вЂ” Р°РІС‚РѕРЅР°СЃС‚СЂРѕР№РєР° (РёРЅС‚РµСЂР°РєС‚РёРІРЅРѕ, СЃ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРµРј)
+#   auto-setup-confirm вЂ” Р°РІС‚РѕРЅР°СЃС‚СЂРѕР№РєР° Р±РµР· РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ (РґР»СЏ Р±РѕС‚Р°)
+#   select             вЂ” РІС‹Р±СЂР°С‚СЊ РєРѕРЅС‚РµР№РЅРµСЂС‹ РІСЂСѓС‡РЅСѓСЋ (РёРЅС‚РµСЂР°РєС‚РёРІРЅРѕ)
+#   list-containers    вЂ” СЃРїРёСЃРѕРє РєРѕРЅС‚РµР№РЅРµСЂРѕРІ (JSON)
+#   select-by-name     вЂ” РІС‹Р±СЂР°С‚СЊ РєРѕРЅС‚РµР№РЅРµСЂС‹ РїРѕ РёРјРµРЅР°Рј
+#   enable             вЂ” РІРєР»СЋС‡РёС‚СЊ Р±Р»РѕРєРёСЂРѕРІРєСѓ
+#   disable            вЂ” РѕС‚РєР»СЋС‡РёС‚СЊ Р±Р»РѕРєРёСЂРѕРІРєСѓ
+#   status             вЂ” СЃС‚Р°С‚СѓСЃ Р±Р»РѕРєРёСЂРѕРІРєРё
+#   apply-ipt          вЂ” С‚РѕР»СЊРєРѕ iptables (+DNAT DNS)
+#   remove-ipt         вЂ” СѓР±СЂР°С‚СЊ iptables (+DNAT DNS)
+#   unbound-on         вЂ” РЅР°СЃС‚СЂРѕРёС‚СЊ Unbound РґР»СЏ Docker
+#   unbound-off        вЂ” СѓР±СЂР°С‚СЊ Docker РёР· Unbound
+#   dns-on             вЂ” РЅР°СЃС‚СЂРѕРёС‚СЊ DNS Docker-РґРµРјРѕРЅР°
+#   dns-off            вЂ” РІРµСЂРЅСѓС‚СЊ DNS РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
+#   cleanup            вЂ” РїРѕР»РЅР°СЏ РѕС‡РёСЃС‚РєР°
 # ============================================================================
 
 DOCKER_CONFIG="/etc/block-ips/docker_containers.conf"
 UNBOUND_CONF="/etc/unbound/unbound.conf"
 IPSET_NAME="blocked_ips"
+ALLOW_SET="whitevpn_allow"
+DOH_SET="whitevpn_doh"
 DAEMON_JSON="/etc/docker/daemon.json"
 MARKER="# whitevpn-docker"
-VERSION="0.3"
-
-# --- Цветной вывод --------------------------------------------------
+LOG_PREFIX="WHITEVPN_BLOCK: "
+# РџСЂРёРІР°С‚РЅС‹Рµ/СЃР»СѓР¶РµР±РЅС‹Рµ РґРёР°РїР°Р·РѕРЅС‹ вЂ” VPN-РєР»РёРµРЅС‚ РЅРµ РґРѕР»Р¶РµРЅ РґРѕСЃС‚СѓС‡Р°С‚СЊСЃСЏ РґРѕ РІРЅСѓС‚СЂРµРЅРЅРµР№
+# СЃРµС‚Рё СЃРµСЂРІРµСЂР° (SSRF: РїР°РЅРµР»СЊ, СЃРѕСЃРµРґРЅРёРµ РєРѕРЅС‚РµР№РЅРµСЂС‹, РѕР±Р»Р°С‡РЅС‹Рµ РјРµС‚Р°РґР°РЅРЅС‹Рµ 169.254).
+PRIVATE_NETS="127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10"
+VERSION="0.9"
 
 log()     { echo -e "\033[34m[INFO]\033[0m $1"; }
 success() { echo -e "\033[32m[OK]\033[0m $1"; }
-error()   { echo -e "\033[31m[ОШИБКА]\033[0m $1"; }
+error()   { echo -e "\033[31m[РћРЁРР‘РљРђ]\033[0m $1"; }
 warn()    { echo -e "\033[33m[!]\033[0m $1"; }
-
-# --- Утилиты --------------------------------------------------------
 
 check_docker() {
   if ! command -v docker &>/dev/null; then
-    error "Docker не установлен."
+    error "Docker РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ."
     return 1
   fi
   if ! docker info &>/dev/null 2>&1; then
-    error "Docker daemon не запущен."
+    error "Docker daemon РЅРµ Р·Р°РїСѓС‰РµРЅ."
     return 1
   fi
   return 0
 }
 
 get_network_subnet() {
-  local network="$1"
-  docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$network" 2>/dev/null
+  docker network inspect --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$1" 2>/dev/null
+}
+
+get_network_gateway() {
+  docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$1" 2>/dev/null
 }
 
 get_docker_gateway() {
@@ -67,9 +72,10 @@ get_docker_gateway() {
   echo "$gateway"
 }
 
-get_configured_subnets() {
-  local subnets=()
+# РЎРїРёСЃРѕРє "subnet|gateway" РґР»СЏ РІСЃРµС… СЃРµС‚РµР№ РІС‹Р±СЂР°РЅРЅС‹С… РєРѕРЅС‚РµР№РЅРµСЂРѕРІ
+get_configured_pairs() {
   [ -f "$DOCKER_CONFIG" ] || return
+  local pairs=()
   while IFS= read -r container; do
     [ -z "$container" ] && continue
     [[ "$container" =~ ^# ]] && continue
@@ -77,117 +83,95 @@ get_configured_subnets() {
       local nets
       nets=$(docker inspect --format '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}' "$container" 2>/dev/null)
       for net in $nets; do
-        local subnet
+        [ "$net" = "host" ] && continue
+        local subnet gateway
         subnet=$(get_network_subnet "$net")
-        [ -n "$subnet" ] && subnets+=("$subnet")
+        gateway=$(get_network_gateway "$net")
+        [ -z "$gateway" ] && gateway=$(get_docker_gateway)
+        [ -n "$subnet" ] && [ -n "$gateway" ] && pairs+=("${subnet}|${gateway}")
       done
     fi
   done < "$DOCKER_CONFIG"
-  printf '%s\n' "${subnets[@]}" | sort -u
+  [ ${#pairs[@]} -gt 0 ] && printf '%s\n' "${pairs[@]}" | sort -u
 }
 
-# --- Классификация контейнера по образу ------------------------------
+get_configured_subnets() {
+  get_configured_pairs | cut -d'|' -f1 | sort -u
+}
 
+# --- РљР»Р°СЃСЃРёС„РёРєР°С†РёСЏ РєРѕРЅС‚РµР№РЅРµСЂРѕРІ РїРѕ РѕР±СЂР°Р·Сѓ ------------------------------
 
 json_escape() {
-  echo -n "classify_container()" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
+  echo -n "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+# Р’РѕР·РІСЂР°С‰Р°РµС‚ РјР°С€РёРЅРЅС‹Р№ С‚РёРї: VPN | PANEL | OTHER
 classify_container() {
-  local image="$1"
   local lower_image
-  lower_image=$(echo "$image" | tr '[:upper:]' '[:lower:]')
-
+  lower_image=$(echo "$1" | tr '[:upper:]' '[:lower:]')
   case "$lower_image" in
-    *amneziawg*|*amnesia-wg*|*awg*)
-      echo "VPN"
-      ;;
-    *wireguard*|*wg-easy*|*wg-quick*)
-      echo "VPN"
-      ;;
-    *openvpn*)
-      echo "VPN"
-      ;;
-    *outline*|*shadowbox*)
-      echo "VPN"
-      ;;
-    *3x-ui*|*x-ui*|*mhsanaei*)
-      echo "Панель"
-      ;;
-    *xray*|*v2ray*|*sing-box*|*vless*)
-      echo "Прокси"
-      ;;
-    *)
-      echo "Другой"
-      ;;
+    *amneziawg*|*amnezia*|*awg*)          echo "VPN" ;;
+    *wireguard*|*wg-easy*|*wg-quick*)     echo "VPN" ;;
+    *openvpn*)                            echo "VPN" ;;
+    *outline*|*shadowbox*)                echo "VPN" ;;
+    *softether*|*ipsec*|*strongswan*)     echo "VPN" ;;
+    *3x-ui*|*x-ui*|*mhsanaei*)            echo "PANEL" ;;
+    *xray*|*v2ray*|*sing-box*|*vless*)    echo "PANEL" ;;
+    *)                                    echo "OTHER" ;;
   esac
 }
 
-# --- Поиск docker-compose.yml контейнера ----------------------------
-
-find_compose_file() {
-  local container="$1"
-  local compose_dir
-  compose_dir=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$container" 2>/dev/null)
-  if [ -n "$compose_dir" ] && [ "$compose_dir" != "<no value>" ]; then
-    for fname in "docker-compose.yml" "docker-compose.yaml" "compose.yml" "compose.yaml"; do
-      if [ -f "$compose_dir/$fname" ]; then
-        echo "$compose_dir/$fname"
-        return 0
-      fi
-    done
-  fi
-  return 1
+type_label() {
+  case "$1" in
+    VPN)   echo "VPN" ;;
+    PANEL) echo "РџСЂРѕРєСЃРё-РїР°РЅРµР»СЊ" ;;
+    *)     echo "Р”СЂСѓРіРѕРµ" ;;
+  esac
 }
 
-# --- Патч docker-compose.yml — добавление DNS ----------------------
+find_compose_file() {
+  docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$1" 2>/dev/null | grep -v '^<no value>$' | head -1
+}
 
 patch_compose_dns() {
   local compose_file="$1"
   local gateway="$2"
 
   if [ ! -f "$compose_file" ]; then
-    error "Файл не найден: $compose_file"
+    error "Р¤Р°Р№Р» РЅРµ РЅР°Р№РґРµРЅ: $compose_file"
     return 1
   fi
 
-  # Проверяем, есть ли уже dns: с нашим gateway
   if grep -q "dns:" "$compose_file" 2>/dev/null; then
     if grep -q "$gateway" "$compose_file" 2>/dev/null; then
-      log "DNS уже настроен в $compose_file"
+      log "DNS СѓР¶Рµ РЅР°СЃС‚СЂРѕРµРЅ РІ $compose_file"
       return 0
     fi
-    warn "В $compose_file уже есть настройка dns:, пропускаю (чтобы не сломать)"
+    warn "Р’ $compose_file СѓР¶Рµ РµСЃС‚СЊ СЃРµРєС†РёСЏ dns:, РїСЂРѕРїСѓСЃРєР°РµРј (РїСЂР°РІСЊС‚Рµ РІСЂСѓС‡РЅСѓСЋ)"
     return 1
   fi
 
-  # Резервная копия
   cp "$compose_file" "${compose_file}.bak.$(date +%s)"
 
-  # Добавляем dns: после строки с image: или container_name: в блоке services
-  # Используем Python для надёжного парсинга YAML
-  python3 -c "
-import sys
+  local patch_out
+  patch_out=$(GATEWAY="$gateway" COMPOSE_FILE="$compose_file" python3 << 'PYEOF'
+import os, sys
+gw = os.environ["GATEWAY"]
+path = os.environ["COMPOSE_FILE"]
 try:
-    with open('$compose_file', 'r') as f:
+    with open(path) as f:
         lines = f.readlines()
-
-    # Ищем строку с 'image:' или 'container_name:' внутри services
-    result = []
-    indent = None
-    added = False
-    for i, line in enumerate(lines):
+    result, added = [], False
+    for line in lines:
         result.append(line)
         stripped = line.lstrip()
         if not added and (stripped.startswith('image:') or stripped.startswith('container_name:')):
             indent = len(line) - len(stripped)
-            # Добавляем dns после этой строки
             result.append(' ' * indent + 'dns:\n')
-            result.append(' ' * indent + '  - $gateway\n')
+            result.append(' ' * indent + f'  - {gw}\n')
             added = True
-
     if added:
-        with open('$compose_file', 'w') as f:
+        with open(path, 'w') as f:
             f.writelines(result)
         print('OK')
     else:
@@ -195,34 +179,21 @@ try:
 except Exception as e:
     print(f'ERROR:{e}', file=sys.stderr)
     sys.exit(1)
-" 2>/dev/null
-
-  local result=$?
-  if [ $result -eq 0 ]; then
-    return 0
-  fi
+PYEOF
+)
+  [ "$patch_out" = "OK" ] && return 0
   return 1
 }
-
-# --- Проверка DNS из контейнера --------------------------------------
 
 verify_dns() {
   local container="$1"
-  # Пытаемся выполнить nslookup из контейнера
   local test_result
   test_result=$(docker exec "$container" sh -c "nslookup google.com 2>/dev/null | head -1" 2>/dev/null)
-  if [ -n "$test_result" ]; then
-    return 0
-  fi
-  # Попробуем через getent
+  [ -n "$test_result" ] && return 0
   test_result=$(docker exec "$container" sh -c "getent hosts google.com 2>/dev/null" 2>/dev/null)
-  if [ -n "$test_result" ]; then
-    return 0
-  fi
+  [ -n "$test_result" ] && return 0
   return 1
 }
-
-# --- Перезапуск контейнера через compose или docker restart ----------
 
 restart_container() {
   local container="$1"
@@ -232,17 +203,17 @@ restart_container() {
   if [ -n "$compose_file" ]; then
     local compose_dir
     compose_dir=$(dirname "$compose_file")
-    log "Перезапуск через docker-compose ($compose_dir)..."
+    log "РџРµСЂРµР·Р°РїСѓСЃРєР°СЋ С‡РµСЂРµР· docker-compose ($compose_dir)..."
     (cd "$compose_dir" && docker compose down && docker compose up -d) 2>/dev/null || \
     (cd "$compose_dir" && docker-compose down && docker-compose up -d) 2>/dev/null
   else
-    log "Перезапуск контейнера $container..."
+    log "РџРµСЂРµР·Р°РїСѓСЃРєР°СЋ РєРѕРЅС‚РµР№РЅРµСЂ $container..."
     docker restart "$container" 2>/dev/null
   fi
 }
 
 # =======================================================================
-# СКАНИРОВАНИЕ
+# РЎРљРђРќРР РћР’РђРќРР•
 # =======================================================================
 
 scan_server() {
@@ -254,7 +225,7 @@ scan_server() {
   local other_containers=()
 
   echo ""
-  echo -e "\033[36m--- Сканирование Docker-контейнеров ---------------\033[0m"
+  echo -e "\033[36m--- РЎРєР°РЅРёСЂРѕРІР°РЅРёРµ Docker-РєРѕРЅС‚РµР№РЅРµСЂРѕРІ ---------------\033[0m"
   echo ""
 
   while IFS= read -r line; do
@@ -265,167 +236,116 @@ scan_server() {
     status=$(echo "$line" | cut -f3-)
     ctype=$(classify_container "$image")
 
-    # Проверка защиты
-    local protected="нет"
+    local protected="РЅРµС‚"
     if [ -f "$DOCKER_CONFIG" ] && grep -qx "$name" "$DOCKER_CONFIG" 2>/dev/null; then
-      protected="да"
+      protected="РґР°"
     fi
 
-    # Сети
     local nets
     nets=$(docker inspect --format '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}({{$conf.IPAddress}}) {{end}}' "$name" 2>/dev/null)
 
-    # Compose file
     local compose
     compose=$(find_compose_file "$name" 2>/dev/null)
     [ -z "$compose" ] && compose="---"
 
-    # Собираем данные
     case "$ctype" in
-      "Панель")
+      PANEL)
         panel_found="true"
         panel_name="$name"
         ;;
-      "VPN")
+      VPN)
         vpn_containers+=("$name|$image|$ctype|$protected|$nets|$compose")
         ;;
       *)
         other_containers+=("$name|$image|$ctype|$protected|$nets|$compose")
         ;;
     esac
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
+  done < <(docker ps --format $'{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
 
-  # Панель
   if [ -n "$panel_found" ]; then
-    success "Панель 3X-UI обнаружена (контейнер: $panel_name)"
+    success "РџР°РЅРµР»СЊ 3X-UI РѕР±РЅР°СЂСѓР¶РµРЅР° (РєРѕРЅС‚РµР№РЅРµСЂ: $panel_name)"
   fi
 
   echo ""
 
-  # VPN-контейнеры
   if [ ${#vpn_containers[@]} -gt 0 ]; then
-    echo -e "  \033[1mVPN-контейнеры (рекомендуется защита):\033[0m"
+    echo -e "  \033[1mVPN-РєРѕРЅС‚РµР№РЅРµСЂС‹ (СЂРµРєРѕРјРµРЅРґСѓРµС‚СЃСЏ Р·Р°С‰РёС‚Р°):\033[0m"
     echo "  --------------------------------------------------"
     for entry in "${vpn_containers[@]}"; do
       IFS='|' read -r name image ctype protected nets compose <<< "$entry"
-      if [ "$protected" = "да" ]; then
+      if [ "$protected" = "РґР°" ]; then
         echo -e "    \033[32m[OK]\033[0m $name ($image)"
       else
-        echo -e "    \033[33m[!]\033[0m  $name ($image) — \033[33mне защищён\033[0m"
+        echo -e "    \033[33m[!]\033[0m  $name ($image) вЂ” \033[33mРЅРµ Р·Р°С‰РёС‰С‘РЅ\033[0m"
       fi
-      echo "         Сети: $nets"
+      echo "         РЎРµС‚Рё: $nets"
       [ "$compose" != "---" ] && echo "         Compose: $compose"
     done
     echo ""
   fi
 
-  # Другие контейнеры
   if [ ${#other_containers[@]} -gt 0 ]; then
-    echo -e "  \033[1mДругие контейнеры:\033[0m"
+    echo -e "  \033[1mРџСЂРѕС‡РёРµ РєРѕРЅС‚РµР№РЅРµСЂС‹:\033[0m"
     echo "  --------------------------------------------------"
     for entry in "${other_containers[@]}"; do
       IFS='|' read -r name image ctype protected nets compose <<< "$entry"
-      if [ "$protected" = "да" ]; then
-        echo -e "    \033[32m[OK]\033[0m $name ($image) — $ctype"
+      if [ "$protected" = "РґР°" ]; then
+        echo -e "    \033[32m[OK]\033[0m $name ($image) вЂ” $(type_label "$ctype")"
       else
-        echo -e "    \033[90m[--]\033[0m $name ($image) — $ctype"
+        echo -e "    \033[90m[--]\033[0m $name ($image) вЂ” $(type_label "$ctype")"
       fi
     done
     echo ""
   fi
 
   if [ ${#vpn_containers[@]} -eq 0 ] && [ ${#other_containers[@]} -eq 0 ] && [ -z "$panel_found" ]; then
-    warn "Docker-контейнеры не найдены."
+    warn "Docker-РєРѕРЅС‚РµР№РЅРµСЂС‹ РЅРµ РЅР°Р№РґРµРЅС‹."
   fi
 }
 
-# --- Сканирование (JSON для бота) -----------------------------------
-
 scan_json() {
-  check_docker || { echo '{"error":"Docker не доступен"}'; return 1; }
-
+  check_docker || { echo '{"error":"Docker РЅРµ Р·Р°РїСѓС‰РµРЅ"}'; return 1; }
   echo "{"
   echo '  "containers": ['
-
   local first=true
   while IFS= read -r line; do
     [ -z "$line" ] && continue
-    local name image status ctype protected compose_file
+    local name image ctype selected
     name=$(echo "$line" | cut -f1)
     image=$(echo "$line" | cut -f2)
-    status=$(echo "$line" | cut -f3-)
     ctype=$(classify_container "$image")
-
-    protected="false"
-    [ -f "$DOCKER_CONFIG" ] && grep -qx "$name" "$DOCKER_CONFIG" 2>/dev/null && protected="true"
-
-    compose_file=$(find_compose_file "$name" 2>/dev/null)
-    [ -z "$compose_file" ] && compose_file=""
-
-    local nets_json=""
-    local net_list
-    net_list=$(docker inspect --format '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}:{{$conf.IPAddress}} {{end}}' "$name" 2>/dev/null)
-    nets_json=$(echo "$net_list" | tr ' ' '\n' | grep -v '^$' | sed 's/^/"/' | sed 's/$/"/' | paste -sd',' -)
-    [ -z "$nets_json" ] && nets_json=""
-
-    if [ "$first" = true ]; then
-      first=false
-    else
-      echo ","
-    fi
-    printf '    {"name":"%s","image":"%s","type":"%s","protected":%s,"compose":"%s","networks":[%s]}' \
-      "$name" "$image" "$ctype" "$protected" "$compose_file" "$nets_json"
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
-
+    selected=false
+    [ -f "$DOCKER_CONFIG" ] && grep -qx "$name" "$DOCKER_CONFIG" 2>/dev/null && selected=true
+    [ "$first" = true ] && first=false || echo ","
+    printf '    {"name":"%s","image":"%s","type":"%s","selected":%s}' \
+      "$(json_escape "$name")" "$(json_escape "$image")" "$ctype" "$selected"
+  done < <(docker ps --format $'{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
   echo ""
   echo "  ],"
-
-  # 3X-UI
-  local panel="false"
-  local panel_name=""
-  while IFS= read -r line; do
-    local img
-    img=$(echo "$line" | cut -f2)
-    local t
-    t=$(classify_container "$img")
-    if [ "$t" = "Панель" ]; then
-      panel="true"
-      panel_name=$(echo "$line" | cut -f1)
-      break
-    fi
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}' | sort)
-
-  printf '  "panel_3xui": %s,\n' "$panel"
-  printf '  "panel_name": "%s",\n' "$panel_name"
-
-  # Gateway
-  local gw
-  gw=$(get_docker_gateway)
-  printf '  "gateway": "%s"\n' "$gw"
-
+  local prot=false
+  iptables -S DOCKER-USER 2>/dev/null | grep -q "$IPSET_NAME" && prot=true
+  echo "  \"protected\": $prot"
   echo "}"
 }
 
 # =======================================================================
-# АВТОНАСТРОЙКА
+# РђР’РўРћРќРђРЎРўР РћР™РљРђ
 # =======================================================================
 
 auto_setup() {
-  local confirm_mode="${1:-ask}"  # ask или force
+  local confirm_mode="${1:-ask}"
   check_docker || return 1
 
   local gateway
   gateway=$(get_docker_gateway)
   if [ -z "$gateway" ]; then
-    error "Не удалось определить gateway IP Docker-сети."
+    error "РќРµ СѓРґР°Р»РѕСЃСЊ РѕРїСЂРµРґРµР»РёС‚СЊ gateway IP Docker-СЃРµС‚Рё."
     return 1
   fi
 
-  # Сбор VPN-контейнеров
   local vpn_names=()
   local vpn_images=()
   local vpn_compose=()
-  local all_subnets=()
 
   while IFS= read -r line; do
     [ -z "$line" ] && continue
@@ -440,276 +360,153 @@ auto_setup() {
       local cf
       cf=$(find_compose_file "$name" 2>/dev/null)
       vpn_compose+=("${cf:-}")
-
-      local nets
-      nets=$(docker inspect --format '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}' "$name" 2>/dev/null)
-      for net in $nets; do
-        local subnet
-        subnet=$(get_network_subnet "$net")
-        [ -n "$subnet" ] && all_subnets+=("$subnet")
-      done
     fi
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
-
-  # Дедупликация подсетей
-  local unique_subnets
-  unique_subnets=$(printf '%s\n' "${all_subnets[@]}" | sort -u)
+  done < <(docker ps --format $'{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
 
   if [ ${#vpn_names[@]} -eq 0 ]; then
-    warn "VPN-контейнеры не обнаружены."
-    log "Если нужно защитить другие контейнеры, используйте ручной выбор."
+    warn "VPN-РєРѕРЅС‚РµР№РЅРµСЂС‹ РЅРµ РѕР±РЅР°СЂСѓР¶РµРЅС‹."
+    log "Р•СЃР»Рё РєРѕРЅС‚РµР№РЅРµСЂ РЅР°Р·РІР°РЅ РЅРµСЃС‚Р°РЅРґР°СЂС‚РЅРѕ вЂ” РёСЃРїРѕР»СЊР·СѓР№С‚Рµ СЂСѓС‡РЅРѕР№ РІС‹Р±РѕСЂ (select)."
     return 1
   fi
 
-  # Показать план
   echo ""
-  echo -e "\033[36m--- Автонастройка Docker-защиты ---------------------\033[0m"
+  echo -e "\033[36m--- РђРІС‚РѕРЅР°СЃС‚СЂРѕР№РєР° Docker-Р·Р°С‰РёС‚С‹ ---------------------\033[0m"
   echo ""
-  echo -e "  \033[1mОбнаружены VPN-контейнеры:\033[0m"
+  echo -e "  \033[1mРќР°Р№РґРµРЅРЅС‹Рµ VPN-РєРѕРЅС‚РµР№РЅРµСЂС‹:\033[0m"
   for i in "${!vpn_names[@]}"; do
     echo "    - ${vpn_names[$i]} (${vpn_images[$i]})"
     local nets_info
     nets_info=$(docker inspect --format '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}({{$conf.IPAddress}}) {{end}}' "${vpn_names[$i]}" 2>/dev/null)
-    echo "      Сети: $nets_info"
+    echo "      РЎРµС‚Рё: $nets_info"
     [ -n "${vpn_compose[$i]}" ] && echo "      Compose: ${vpn_compose[$i]}"
   done
 
   echo ""
-  echo -e "  \033[1mБудет выполнено:\033[0m"
-  echo "    1. Добавление iptables правил DOCKER-USER"
-  echo "       для блокировки IP из antifilter.network"
-  echo "    2. Настройка Unbound для Docker-подсетей"
-  echo "    3. Настройка DNS Docker-демона (daemon.json > $gateway)"
-
-  local has_compose=false
-  for cf in "${vpn_compose[@]}"; do
-    [ -n "$cf" ] && has_compose=true && break
-  done
-  if [ "$has_compose" = true ]; then
-    echo "    4. Добавление dns: $gateway в docker-compose.yml"
-    echo "    5. Перезапуск VPN-контейнеров"
-    echo "    6. Создание сервиса автовосстановления"
-  else
-    echo "    4. Перезапуск VPN-контейнеров"
-    echo "    5. Создание сервиса автовосстановления"
-  fi
-
+  echo -e "  \033[1mР‘СѓРґРµС‚ РІС‹РїРѕР»РЅРµРЅРѕ:\033[0m"
+  echo "    1. Р‘Р»РѕРєРёСЂРѕРІРєР° iptables (С†РµРїРѕС‡РєР° DOCKER-USER + Р±РµР»С‹Р№ СЃРїРёСЃРѕРє)"
+  echo "    2. РџРµСЂРµРЅР°РїСЂР°РІР»РµРЅРёРµ DNS РєРѕРЅС‚РµР№РЅРµСЂРѕРІ РЅР° Unbound (DNAT :53)"
+  echo "    3. РќР°СЃС‚СЂРѕР№РєР° Unbound РґР»СЏ Docker-РїРѕРґСЃРµС‚РµР№"
+  echo "    4. РќР°СЃС‚СЂРѕР№РєР° DNS Docker-РґРµРјРѕРЅР° (daemon.json -> $gateway)"
+  echo "    5. РџРµСЂРµР·Р°РїСѓСЃРє Docker Рё РєРѕРЅС‚РµР№РЅРµСЂРѕРІ"
+  echo "    6. РџСЂРѕРІРµСЂРєР° СЂР°Р±РѕС‚С‹ DNS РІ РєРѕРЅС‚РµР№РЅРµСЂР°С…"
   echo ""
-  warn "Контейнеры будут перезапущены!"
+  warn "РљРѕРЅС‚РµР№РЅРµСЂС‹ Р±СѓРґСѓС‚ РїРµСЂРµР·Р°РїСѓС‰РµРЅС‹!"
   echo ""
 
-  # Подтверждение
   if [ "$confirm_mode" = "ask" ]; then
-    read -rp "  Применить настройки? (y/n): " answer
-    if [[ ! "$answer" =~ ^[yYдД] ]]; then
-      log "Отменено."
+    read -rp "  РџСЂРѕРґРѕР»Р¶РёС‚СЊ РЅР°СЃС‚СЂРѕР№РєСѓ? (y/n): " answer
+    if [[ ! "$answer" =~ ^[yYРґР”] ]]; then
+      log "РћС‚РјРµРЅРµРЅРѕ."
       return 1
     fi
   fi
 
   echo ""
 
-  # --- Шаг 1: Сохранить выбранные контейнеры --------------------
   mkdir -p "$(dirname "$DOCKER_CONFIG")"
   printf '%s\n' "${vpn_names[@]}" > "$DOCKER_CONFIG"
-  success "Контейнеры сохранены в конфиг: ${vpn_names[*]}"
+  success "РљРѕРЅС‚РµР№РЅРµСЂС‹ СЃРѕС…СЂР°РЅРµРЅС‹ РІ РєРѕРЅС„РёРіРµ: ${vpn_names[*]}"
 
-  # --- Шаг 2: iptables DOCKER-USER ------------------------------
-  if ipset list "$IPSET_NAME" &>/dev/null; then
-    while IFS= read -r subnet; do
-      [ -z "$subnet" ] && continue
-      if ! iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP 2>/dev/null; then
-        iptables -I DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP
-        success "iptables: DOCKER-USER для $subnet"
-      else
-        log "iptables: правило для $subnet уже есть"
-      fi
-    done <<< "$unique_subnets"
-  else
-    warn "ipset '$IPSET_NAME' не найден — обновите списки IP (пункт 1 в меню)"
-    log "iptables правила будут применены после обновления списков"
-  fi
+  apply_docker_rules
+  configure_unbound_docker
 
-  # --- Шаг 3: Unbound -------------------------------------------
-  if [ -f "$UNBOUND_CONF" ]; then
-    if grep -q "interface: 127.0.0.1" "$UNBOUND_CONF" 2>/dev/null; then
-      sed -i 's/interface: 127.0.0.1/interface: 0.0.0.0/' "$UNBOUND_CONF"
-    fi
-    while IFS= read -r subnet; do
-      [ -z "$subnet" ] && continue
-      if ! grep -q "access-control: $subnet allow" "$UNBOUND_CONF" 2>/dev/null; then
-        sed -i "/access-control: 127.0.0.0\/8 allow/a\\    access-control: $subnet allow $MARKER" "$UNBOUND_CONF"
-        success "Unbound: access-control $subnet"
-      fi
-    done <<< "$unique_subnets"
-    systemctl reload unbound 2>/dev/null || systemctl restart unbound
-    success "Unbound настроен для Docker-подсетей"
-  fi
-
-  # --- Шаг 4: DNS Docker-демона (daemon.json) -------------------
-  local daemon_config="{}"
-  [ -f "$DAEMON_JSON" ] && daemon_config=$(python3 -c "import json; print(json.dumps(json.load(open('$DAEMON_JSON')), indent=2))")
-
-  local new_config
-  new_config=$(python3 -c "
-import json
+  # РџРµСЂРµС‡РёС‚С‹РІР°РµРј gateway (РїРµСЂРµРјРµРЅРЅСѓСЋ РјРѕРі РЅРµ СЃРѕС…СЂР°РЅРёС‚СЊ apply_docker_rules) Рё РїСЂРѕРІРµСЂСЏРµРј
+  gateway=$(get_docker_gateway)
+  if [ -n "$gateway" ]; then
+    local new_config
+    new_config=$(GATEWAY="$gateway" python3 << 'PYEOF'
+import json, os
+gw = os.environ["GATEWAY"]
 try:
-    cfg = json.loads('''$daemon_config''')
-except:
+    with open("/etc/docker/daemon.json") as f:
+        cfg = json.load(f)
+except Exception:
     cfg = {}
-cfg['dns'] = ['$gateway']
+cfg["dns"] = [gw]
 print(json.dumps(cfg, indent=2))
-" 2>/dev/null)
-
-  if [ -n "$new_config" ]; then
-    [ -f "$DAEMON_JSON" ] && cp "$DAEMON_JSON" "${DAEMON_JSON}.bak.$(date +%s)"
-    echo "$new_config" > "$DAEMON_JSON"
-    success "daemon.json: dns > $gateway"
+PYEOF
+)
+    if [ -n "$new_config" ]; then
+      [ -f "$DAEMON_JSON" ] && cp "$DAEMON_JSON" "${DAEMON_JSON}.bak.$(date +%s)"
+      echo "$new_config" > "$DAEMON_JSON"
+      success "daemon.json: dns -> $gateway"
+    fi
   else
-    echo "{\"dns\": [\"$gateway\"]}" > "$DAEMON_JSON"
-    success "daemon.json: dns > $gateway"
+    warn "gateway РїСѓСЃС‚ вЂ” daemon.json РЅРµ РёР·РјРµРЅС‘РЅ (DNAT :53 РІСЃС‘ СЂР°РІРЅРѕ РЅР°РїСЂР°РІРёС‚ DNS РІ Unbound)"
   fi
 
-  # --- Шаг 5: Патч docker-compose.yml ---------------------------
   for i in "${!vpn_names[@]}"; do
     if [ -n "${vpn_compose[$i]}" ]; then
-      local patch_result
-      patch_result=$(patch_compose_dns "${vpn_compose[$i]}" "$gateway")
-      if [ "$patch_result" = "OK" ] || [ $? -eq 0 ]; then
-        success "docker-compose.yml: dns > $gateway (${vpn_names[$i]})"
+      if patch_compose_dns "${vpn_compose[$i]}" "$gateway"; then
+        success "docker-compose.yml: dns -> $gateway (${vpn_names[$i]})"
       fi
     fi
   done
 
-  # --- Шаг 6: Перезапуск Docker и контейнеров -------------------
-  log "Перезапуск Docker-демона..."
-  systemctl restart docker
-  if [ $? -eq 0 ]; then
-    success "Docker-демон перезапущен"
+  log "РџРµСЂРµР·Р°РїСѓСЃРєР°СЋ Docker-РґРµРјРѕРЅ..."
+  if systemctl restart docker; then
+    success "Docker-РґРµРјРѕРЅ РїРµСЂРµР·Р°РїСѓС‰РµРЅ"
   else
-    error "Не удалось перезапустить Docker"
+    error "РќРµ СѓРґР°Р»РѕСЃСЊ РїРµСЂРµР·Р°РїСѓСЃС‚РёС‚СЊ Docker"
   fi
 
-  # Ждём готовности Docker
   local wait_count=0
   while ! docker info &>/dev/null 2>&1; do
     sleep 2
     ((wait_count++))
-    [ $wait_count -ge 15 ] && { error "Docker не запустился за 30 секунд"; break; }
+    [ $wait_count -ge 15 ] && { error "Docker РЅРµ Р·Р°РїСѓСЃС‚РёР»СЃСЏ Р·Р° 30 СЃРµРєСѓРЅРґ"; break; }
   done
 
-  # Перезапуск контейнеров
   for name in "${vpn_names[@]}"; do
     restart_container "$name"
-    success "$name перезапущен"
+    success "$name РїРµСЂРµР·Р°РїСѓС‰РµРЅ"
   done
 
-  # Небольшая пауза для старта контейнеров
   sleep 3
 
-  # --- Шаг 7: Проверка DNS --------------------------------------
+  # РџРѕСЃР»Рµ СЂРµСЃС‚Р°СЂС‚Р° Docker С†РµРїРѕС‡РєРё РїРµСЂРµСЃРѕР·РґР°РЅС‹ вЂ” РїСЂРёРјРµРЅСЏРµРј РїСЂР°РІРёР»Р° Р·Р°РЅРѕРІРѕ
+  apply_docker_rules
+
   for name in "${vpn_names[@]}"; do
     if docker ps --format '{{.Names}}' | grep -qx "$name"; then
       if verify_dns "$name"; then
-        success "Проверка DNS в $name... работает!"
+        success "РџСЂРѕРІРµСЂРєР° DNS РІ $name... СЂР°Р±РѕС‚Р°РµС‚!"
       else
-        warn "Проверка DNS в $name... не удалось проверить (контейнер может не иметь nslookup)"
+        warn "РџСЂРѕРІРµСЂРєР° DNS РІ $name... РЅРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕРІРµСЂРёС‚СЊ (РІ РѕР±СЂР°Р·Рµ РЅРµС‚ nslookup)"
       fi
     fi
   done
 
-  # Пере-применяем iptables после рестарта Docker
-  if ipset list "$IPSET_NAME" &>/dev/null; then
-    local fresh_subnets
-    fresh_subnets=$(get_configured_subnets)
-    if [ -n "$fresh_subnets" ]; then
-      while IFS= read -r subnet; do
-        [ -z "$subnet" ] && continue
-        if ! iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP 2>/dev/null; then
-          iptables -I DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP
-        fi
-      done <<< "$fresh_subnets"
-    fi
-  fi
-
   echo ""
-  echo -e "\033[32m=== Готово! Docker-защита активирована ===\033[0m"
+  echo -e "\033[32m=== Р“РѕС‚РѕРІРѕ! Docker-Р·Р°С‰РёС‚Р° РЅР°СЃС‚СЂРѕРµРЅР° ===\033[0m"
   echo ""
 }
 
 # =======================================================================
-# КРАТКИЙ СТАТУС (для вывода при включении защиты)
+# РљР РђРўРљРР™ РЎРўРђРўРЈРЎ
 # =======================================================================
 
 brief_status() {
   check_docker || return 1
-
-  local panel_found=""
-  local panel_name=""
-
   echo ""
-  echo -e "\033[36m--- Сканирование сервера -----------------------------\033[0m"
-
-  # Панель
-  while IFS= read -r line; do
-    local img
-    img=$(echo "$line" | cut -f2)
-    if [ "$(classify_container "$img")" = "Панель" ]; then
-      panel_name=$(echo "$line" | cut -f1)
-      panel_found=true
-      break
-    fi
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}' | sort)
-
-  [ -n "$panel_found" ] && success "Панель 3X-UI обнаружена (контейнер: $panel_name)"
-
-  echo ""
-  echo -e "\033[36m--- Docker-контейнеры -------------------------------\033[0m"
-
-  local has_protected=false
-  local has_unprotected=false
-
-  # Защищённые
-  if [ -f "$DOCKER_CONFIG" ]; then
-    while IFS= read -r name; do
-      [ -z "$name" ] && continue
-      if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name"; then
-        local img
-        img=$(docker inspect --format '{{.Config.Image}}' "$name" 2>/dev/null)
-        echo -e "  \033[32m[OK]\033[0m $name ($img) — IP + DNS блокировка"
-        has_protected=true
-      fi
-    done < "$DOCKER_CONFIG"
-  fi
-
-  # Незащищённые
+  local total=0 protected=0
   while IFS= read -r line; do
     [ -z "$line" ] && continue
-    local name image ctype
+    local name
     name=$(echo "$line" | cut -f1)
-    image=$(echo "$line" | cut -f2)
-    ctype=$(classify_container "$image")
-
-    if [ "$ctype" = "Панель" ]; then
-      continue
-    fi
-
+    ((total++))
     if [ -f "$DOCKER_CONFIG" ] && grep -qx "$name" "$DOCKER_CONFIG" 2>/dev/null; then
-      continue
+      ((protected++))
     fi
-
-    echo -e "  \033[33m[!]\033[0m  $name ($image) — не защищён"
-    has_unprotected=true
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}' | sort)
-
-  if [ "$has_protected" = false ] && [ "$has_unprotected" = false ]; then
-    log "Docker-контейнеры не найдены"
-  fi
+  done < <(docker ps --format $'{{.Names}}\t{{.Image}}' | sort)
+  local rules="РІС‹РєР»"
+  iptables -S DOCKER-USER 2>/dev/null | grep -q "$IPSET_NAME" && rules="РІРєР»"
+  echo "  РљРѕРЅС‚РµР№РЅРµСЂРѕРІ: $total | Р’ Р·Р°С‰РёС‚Рµ: $protected | РџСЂР°РІРёР»Р° DOCKER-USER: $rules"
   echo ""
 }
 
 # =======================================================================
-# РУЧНОЙ ВЫБОР КОНТЕЙНЕРОВ
+# Р’Р«Р‘РћР  РљРћРќРўР•Р™РќР•Р РћР’
 # =======================================================================
 
 select_containers() {
@@ -718,23 +515,23 @@ select_containers() {
   local containers=()
   while IFS= read -r line; do
     [ -n "$line" ] && containers+=("$line")
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
+  done < <(docker ps --format $'{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
 
   if [ ${#containers[@]} -eq 0 ]; then
-    error "Нет запущенных Docker-контейнеров."
+    error "РќРµС‚ Р·Р°РїСѓС‰РµРЅРЅС‹С… Docker-РєРѕРЅС‚РµР№РЅРµСЂРѕРІ."
     return 1
   fi
 
   echo ""
-  log "Запущенные Docker-контейнеры:"
+  log "Р—Р°РїСѓС‰РµРЅРЅС‹Рµ Docker-РєРѕРЅС‚РµР№РЅРµСЂС‹:"
   echo "  ----------------------------------------------------------"
-  printf "  %-4s %-20s %-30s %-10s %s\n" "№" "ИМЯ" "ОБРАЗ" "ТИП" "ЗАЩИТА"
+  printf "  %-4s %-20s %-30s %-14s %s\n" "в„–" "РРјСЏ" "РћР±СЂР°Р·" "РўРёРї" "Р—Р°С‰РёС‚Р°"
   echo "  ----------------------------------------------------------"
 
   local names=()
   local i=1
   for line in "${containers[@]}"; do
-    local name image status ctype protected_mark
+    local name image ctype protected_mark
     name=$(echo "$line" | cut -f1)
     image=$(echo "$line" | cut -f2)
     ctype=$(classify_container "$image")
@@ -745,19 +542,19 @@ select_containers() {
       protected_mark="\033[32m[OK]\033[0m"
     fi
 
-    printf "  %-4s %-20s %-30s %-10s " "$i)" "$name" "$image" "$ctype"
+    printf "  %-4s %-20s %-30s %-14s " "$i)" "$name" "$image" "$(type_label "$ctype")"
     echo -e "$protected_mark"
     ((i++))
   done
 
   echo "  ----------------------------------------------------------"
   echo ""
-  echo "  Введите номера через пробел (например: 1 3 5)"
-  echo "  'all' — выбрать все, '0' — отмена"
+  echo "  Р’РІРµРґРёС‚Рµ РЅРѕРјРµСЂР° С‡РµСЂРµР· РїСЂРѕР±РµР» (РЅР°РїСЂРёРјРµСЂ: 1 3 5)"
+  echo "  'all' вЂ” РІС‹Р±СЂР°С‚СЊ РІСЃРµ, '0' вЂ” РѕС‚РјРµРЅР°"
   echo ""
-  read -rp "  Ваш выбор: " choice
+  read -rp "  Р’Р°С€ РІС‹Р±РѕСЂ: " choice
 
-  [ "$choice" = "0" ] && { log "Отменено."; return 1; }
+  [ "$choice" = "0" ] && { log "РћС‚РјРµРЅРµРЅРѕ."; return 1; }
 
   local selected=()
   if [ "$choice" = "all" ]; then
@@ -767,21 +564,19 @@ select_containers() {
       if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le ${#names[@]} ]; then
         selected+=("${names[$((num-1))]}")
       else
-        error "Неверный номер: $num"
+        error "РќРµРІРµСЂРЅС‹Р№ РЅРѕРјРµСЂ: $num"
       fi
     done
   fi
 
-  [ ${#selected[@]} -eq 0 ] && { error "Ничего не выбрано."; return 1; }
+  [ ${#selected[@]} -eq 0 ] && { error "РќРёС‡РµРіРѕ РЅРµ РІС‹Р±СЂР°РЅРѕ."; return 1; }
 
   mkdir -p "$(dirname "$DOCKER_CONFIG")"
   printf '%s\n' "${selected[@]}" > "$DOCKER_CONFIG"
-  success "Сохранено ${#selected[@]} контейнер(ов):"
+  success "Р’С‹Р±СЂР°РЅРѕ ${#selected[@]} РєРѕРЅС‚РµР№РЅРµСЂ(РѕРІ):"
   for name in "${selected[@]}"; do echo "    - $name"; done
   return 0
 }
-
-# --- Неинтерактивный список контейнеров (JSON) ----------------------
 
 list_containers() {
   check_docker || return 1
@@ -789,10 +584,9 @@ list_containers() {
   local first=true
   while IFS= read -r line; do
     [ -z "$line" ] && continue
-    local name image status ctype
+    local name image ctype
     name=$(echo "$line" | cut -f1)
     image=$(echo "$line" | cut -f2)
-    status=$(echo "$line" | cut -f3-)
     ctype=$(classify_container "$image")
 
     local selected=false
@@ -800,18 +594,16 @@ list_containers() {
 
     [ "$first" = true ] && first=false || echo ","
     printf '  {"name":"%s","image":"%s","type":"%s","selected":%s}' \
-      "$name" "$image" "$ctype" "$selected"
-  done < <(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
+      "$(json_escape "$name")" "$(json_escape "$image")" "$ctype" "$selected"
+  done < <(docker ps --format $'{{.Names}}\t{{.Image}}\t{{.Status}}' | sort)
   echo ""
   echo "]"
 }
 
-# --- Неинтерактивный выбор по имени ---------------------------------
-
 select_by_name() {
   check_docker || return 1
   local names=("$@")
-  [ ${#names[@]} -eq 0 ] && { error "Укажите имена контейнеров."; return 1; }
+  [ ${#names[@]} -eq 0 ] && { error "РќРµ СѓРєР°Р·Р°РЅС‹ РёРјРµРЅР° РєРѕРЅС‚РµР№РЅРµСЂРѕРІ."; return 1; }
 
   local valid=()
   local running
@@ -821,58 +613,116 @@ select_by_name() {
     if echo "$running" | grep -qx "$name"; then
       valid+=("$name")
     else
-      error "Контейнер '$name' не найден среди запущенных."
+      error "РљРѕРЅС‚РµР№РЅРµСЂ '$name' РЅРµ РЅР°Р№РґРµРЅ СЃСЂРµРґРё Р·Р°РїСѓС‰РµРЅРЅС‹С…."
     fi
   done
 
-  [ ${#valid[@]} -eq 0 ] && { error "Ни один контейнер не найден."; return 1; }
+  [ ${#valid[@]} -eq 0 ] && { error "РќРё РѕРґРёРЅ РєРѕРЅС‚РµР№РЅРµСЂ РЅРµ РІС‹Р±СЂР°РЅ."; return 1; }
 
   mkdir -p "$(dirname "$DOCKER_CONFIG")"
   printf '%s\n' "${valid[@]}" > "$DOCKER_CONFIG"
-  success "Сохранено ${#valid[@]} контейнер(ов)."
+  success "Р’С‹Р±СЂР°РЅРѕ ${#valid[@]} РєРѕРЅС‚РµР№РЅРµСЂ(РѕРІ)."
   return 0
 }
 
 # =======================================================================
-# ПРАВИЛА IPTABLES
+# РџР РђР’РР›Рђ IPTABLES (DOCKER-USER + DNAT DNS)
 # =======================================================================
 
 apply_docker_rules() {
   check_docker || return 1
-  local subnets
-  subnets=$(get_configured_subnets)
-  [ -z "$subnets" ] && { error "Нет подсетей. Выберите контейнеры сначала."; return 1; }
-  ipset list "$IPSET_NAME" &>/dev/null || { error "ipset '$IPSET_NAME' не существует."; return 1; }
+  local pairs
+  pairs=$(get_configured_pairs)
+  [ -z "$pairs" ] && { error "РќРµС‚ РїРѕРґСЃРµС‚РµР№. Р’С‹Р±РµСЂРёС‚Рµ РєРѕРЅС‚РµР№РЅРµСЂС‹ СЃРЅР°С‡Р°Р»Р° (select / auto-setup)."; return 1; }
+  ipset list "$IPSET_NAME" -t &>/dev/null || { error "ipset '$IPSET_NAME' РЅРµ СЃСѓС‰РµСЃС‚РІСѓРµС‚. Р—Р°РїСѓСЃС‚РёС‚Рµ РѕР±РЅРѕРІР»РµРЅРёРµ СЃРїРёСЃРєРѕРІ."; return 1; }
+  ipset create "$ALLOW_SET" hash:net maxelem 65536 -exist
+  ipset create "$DOH_SET" hash:ip maxelem 1024 -exist
 
-  log "Применяю правила DOCKER-USER..."
-  while IFS= read -r subnet; do
+  log "РџСЂРёРјРµРЅСЏСЋ РїСЂР°РІРёР»Р° DOCKER-USER + DNAT DNS..."
+  local subnet gateway proto pnet
+  while IFS='|' read -r subnet gateway; do
     [ -z "$subnet" ] && continue
+
+    # Р‘Р»РѕРє РїСЂРёРІР°С‚РЅС‹С… РґРёР°РїР°Р·РѕРЅРѕРІ (SSRF-Р·Р°С‰РёС‚Р°) вЂ” РџР•Р Р•Р” whitelist, С‡С‚РѕР±С‹ РєР»РёРµРЅС‚
+    # РЅРµ РјРѕРі РґРѕСЃС‚СѓС‡Р°С‚СЊСЃСЏ РґРѕ РІРЅСѓС‚СЂРµРЅРЅРµР№ СЃРµС‚Рё СЃРµСЂРІРµСЂР° РґР°Р¶Рµ С‡РµСЂРµР· whitelisted-Р°РґСЂРµСЃ.
+    for pnet in $PRIVATE_NETS; do
+      if ! iptables -C DOCKER-USER -s "$subnet" -d "$pnet" -j DROP 2>/dev/null; then
+        iptables -I DOCKER-USER 1 -s "$subnet" -d "$pnet" -j DROP
+      fi
+    done
+    # РСЃРєР»СЋС‡РµРЅРёРµ: gateway:53 (РЅР°С€ Unbound С‡РµСЂРµР· DNAT) вЂ” РЅСѓР¶РµРЅ РґР»СЏ DNS. DNAT РЅРёР¶Рµ
+    # РїРµСЂРµРЅР°РїСЂР°РІРёС‚ :53 РЅР° gateway; РѕС‚РІРµС‚ РёРґС‘С‚ РїРѕ established, Р° РїСЂСЏРјРѕР№ РґРѕСЃС‚СѓРї Рє
+    # РґСЂСѓРіРёРј РїРѕСЂС‚Р°Рј gateway/РїСЂРёРІР°С‚РЅС‹Рј вЂ” Р·Р°РєСЂС‹С‚ РїСЂР°РІРёР»РѕРј РІС‹С€Рµ.
+    iptables -C DOCKER-USER -s "$subnet" -d "$gateway" -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -d "$gateway" -p udp --dport 53 -j ACCEPT
+    iptables -C DOCKER-USER -s "$subnet" -d "$gateway" -p tcp --dport 53 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -d "$gateway" -p tcp --dport 53 -j ACCEPT
+
+    # РџРѕСЂСЏРґРѕРє РІ С†РµРїРѕС‡РєРµ: RETURN(Р±РµР»С‹Р№ СЃРїРёСЃРѕРє) -> LOG -> DROP.
+    # Р’СЃС‚Р°РІР»СЏРµРј РІ РѕР±СЂР°С‚РЅРѕРј РїРѕСЂСЏРґРєРµ, РєР°Р¶РґС‹Р№ СЂР°Р· РІ РЅР°С‡Р°Р»Рѕ С†РµРїРѕС‡РєРё.
     if ! iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP 2>/dev/null; then
-      iptables -I DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP
-      success "DOCKER-USER: -s $subnet > DROP"
-    else
-      log "Правило для $subnet уже существует."
+      iptables -I DOCKER-USER 1 -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP
     fi
-  done <<< "$subnets"
+    if ! iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j LOG --log-prefix "$LOG_PREFIX" --log-level 4 2>/dev/null; then
+      iptables -I DOCKER-USER 1 -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j LOG --log-prefix "$LOG_PREFIX" --log-level 4
+    fi
+    if ! iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$ALLOW_SET" dst -j RETURN 2>/dev/null; then
+      iptables -I DOCKER-USER 1 -s "$subnet" -m set --match-set "$ALLOW_SET" dst -j RETURN
+    fi
+    success "DOCKER-USER: $subnet (whitelist -> LOG -> DROP)"
+
+    # DNAT: Р»СЋР±РѕР№ DNS-Р·Р°РїСЂРѕСЃ РёР· РєРѕРЅС‚РµР№РЅРµСЂР° РїСЂРёРЅСѓРґРёС‚РµР»СЊРЅРѕ РїРѕРїР°РґР°РµС‚ РІ Unbound.
+    # РљР»РёРµРЅС‚ VPN РјРѕР¶РµС‚ СѓРєР°Р·Р°С‚СЊ СЃРІРѕР№ DNS (1.1.1.1 Рё С‚.Рї.) вЂ” С„РёР»СЊС‚СЂР°С†РёСЏ РІСЃС‘ СЂР°РІРЅРѕ СЃСЂР°Р±РѕС‚Р°РµС‚.
+    for proto in udp tcp; do
+      if ! iptables -t nat -C PREROUTING -s "$subnet" -p "$proto" --dport 53 ! -d "$gateway" -j DNAT --to-destination "${gateway}:53" 2>/dev/null; then
+        iptables -t nat -I PREROUTING -s "$subnet" -p "$proto" --dport 53 ! -d "$gateway" -j DNAT --to-destination "${gateway}:53"
+      fi
+    done
+    # DoT (853) + DoH (443 Рє РёР·РІРµСЃС‚РЅС‹Рј СЂРµР·РѕР»РІРµСЂР°Рј) вЂ” РѕР±С…РѕРґ DNS-Р±Р»РѕРєР°
+    iptables -C DOCKER-USER -s "$subnet" -p tcp --dport 853 -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -p tcp --dport 853 -j DROP
+    iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$DOH_SET" dst -p tcp --dport 443 -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -m set --match-set "$DOH_SET" dst -p tcp --dport 443 -j DROP
+    iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$DOH_SET" dst -p udp --dport 443 -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -m set --match-set "$DOH_SET" dst -p udp --dport 443 -j DROP
+    success "DNAT DNS: $subnet -> ${gateway}:53"
+  done <<< "$pairs"
+
+  # Host-guard: С‚СЂР°С„РёРє РєРѕРЅС‚РµР№РЅРµСЂ->РҐРћРЎРў (gateway IP) РёРґС‘С‚ С‡РµСЂРµР· INPUT, Р° РЅРµ
+  # DOCKER-USER. Р‘РµР· СЌС‚РѕРіРѕ VPN-РєР»РёРµРЅС‚ РґРѕСЃС‚СѓС‡РёС‚СЃСЏ РґРѕ СЃРµСЂРІРёСЃРѕРІ С…РѕСЃС‚Р° (РїР°РЅРµР»СЊ x-ui,
+  # SSH) РїРѕ IP gateway. РћС‚РґРµР»СЊРЅР°СЏ С†РµРїРѕС‡РєР°: РїСѓСЃРєР°РµРј С‚РѕР»СЊРєРѕ DNS Рє gateway:53,
+  # РѕСЃС‚Р°Р»СЊРЅРѕРµ РєРѕРЅС‚РµР№РЅРµСЂ->С…РѕСЃС‚ СЂРµР¶РµРј. РќРµ-docker С‚СЂР°С„РёРє (РЅР°С€ SSH) РЅРµ РјР°С‚С‡РёС‚СЃСЏ.
+  iptables -N WHITEVPN_HOSTGUARD 2>/dev/null
+  iptables -F WHITEVPN_HOSTGUARD
+  local sn
+  while IFS= read -r sn; do
+    [ -z "$sn" ] && continue
+    iptables -A WHITEVPN_HOSTGUARD -s "$sn" -p udp --dport 53 -j RETURN
+    iptables -A WHITEVPN_HOSTGUARD -s "$sn" -p tcp --dport 53 -j RETURN
+    iptables -A WHITEVPN_HOSTGUARD -s "$sn" -j DROP
+  done <<< "$(get_configured_subnets)"
+  iptables -C INPUT -j WHITEVPN_HOSTGUARD 2>/dev/null || iptables -I INPUT 1 -j WHITEVPN_HOSTGUARD
 }
 
 remove_docker_rules() {
-  log "Удаляю правила Docker-блокировки..."
+  log "РЈРґР°Р»СЏСЋ РїСЂР°РІРёР»Р° Docker-Р±Р»РѕРєРёСЂРѕРІРєРё..."
   local removed=0
-  while iptables -D DOCKER-USER -m set --match-set "$IPSET_NAME" dst -j DROP 2>/dev/null; do
-    ((removed++))
-  done
-  local subnets
-  subnets=$(get_configured_subnets 2>/dev/null)
-  if [ -n "$subnets" ]; then
-    while IFS= read -r subnet; do
-      [ -z "$subnet" ] && continue
-      while iptables -D DOCKER-USER -s "$subnet" -m set --match-set "$IPSET_NAME" dst -j DROP 2>/dev/null; do
-        ((removed++))
-      done
-    done <<< "$subnets"
-  fi
-  success "Удалено правил: $removed"
+
+  while IFS= read -r rule; do
+    [ -z "$rule" ] && continue
+    eval "iptables -D DOCKER-USER ${rule#-A DOCKER-USER }" 2>/dev/null && ((removed++))
+  done < <(iptables -S DOCKER-USER 2>/dev/null | grep -E "match-set ($IPSET_NAME|$ALLOW_SET) dst")
+  # РїСЂРёРІР°С‚РЅС‹Рµ DROP Рё gateway:53 ACCEPT
+  while IFS= read -r rule; do
+    [ -z "$rule" ] && continue
+    eval "iptables -D DOCKER-USER ${rule#-A DOCKER-USER }" 2>/dev/null && ((removed++))
+  done < <(iptables -S DOCKER-USER 2>/dev/null | grep -E "10.0.0.0/8|127.0.0.0/8|172.16.0.0/12|192.168.0.0/16|169.254|100.64|dport 53 -j ACCEPT|dport 853|whitevpn_doh")
+
+  while IFS= read -r rule; do
+    [ -z "$rule" ] && continue
+    eval "iptables -t nat -D PREROUTING ${rule#-A PREROUTING }" 2>/dev/null && ((removed++))
+  done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- '--dport 53 .*--to-destination')
+
+  # host-guard
+  iptables -D INPUT -j WHITEVPN_HOSTGUARD 2>/dev/null
+  iptables -F WHITEVPN_HOSTGUARD 2>/dev/null
+  iptables -X WHITEVPN_HOSTGUARD 2>/dev/null
+  success "РЈРґР°Р»РµРЅРѕ РїСЂР°РІРёР»: $removed"
 }
 
 # =======================================================================
@@ -883,12 +733,14 @@ configure_unbound_docker() {
   check_docker || return 1
   local subnets
   subnets=$(get_configured_subnets)
-  [ -z "$subnets" ] && { error "Нет подсетей."; return 1; }
+  [ -z "$subnets" ] && { error "РќРµС‚ РїРѕРґСЃРµС‚РµР№."; return 1; }
 
-  log "Настраиваю Unbound для Docker..."
+  log "РќР°СЃС‚СЂР°РёРІР°СЋ Unbound РґР»СЏ Docker..."
+  local iface_changed=0
   if grep -q "interface: 127.0.0.1" "$UNBOUND_CONF" 2>/dev/null; then
     sed -i 's/interface: 127.0.0.1/interface: 0.0.0.0/' "$UNBOUND_CONF"
-    success "Unbound: interface > 0.0.0.0"
+    iface_changed=1
+    success "Unbound: interface -> 0.0.0.0"
   fi
   while IFS= read -r subnet; do
     [ -z "$subnet" ] && continue
@@ -897,42 +749,54 @@ configure_unbound_docker() {
       success "Unbound: access-control $subnet"
     fi
   done <<< "$subnets"
-  systemctl reload unbound 2>/dev/null || systemctl restart unbound
-  success "Unbound перезагружен."
+  # Р’РђР–РќРћ: СЃРјРµРЅР° interface С‚СЂРµР±СѓРµС‚ РїРѕР»РЅРѕРіРѕ restart вЂ” reload РќР• РїРµСЂРµРїСЂРёРІСЏР·С‹РІР°РµС‚ СЃРѕРєРµС‚С‹,
+  # unbound РѕСЃС‚Р°РЅРµС‚СЃСЏ СЃР»СѓС€Р°С‚СЊ 127.0.0.1 Рё РєРѕРЅС‚РµР№РЅРµСЂС‹ РЅРµ РґРѕСЃС‚СѓС‡Р°С‚СЃСЏ РґРѕ DNS.
+  if [ "$iface_changed" = "1" ]; then
+    systemctl restart unbound
+    success "Unbound РїРµСЂРµР·Р°РїСѓС‰РµРЅ (interface 0.0.0.0)"
+  else
+    systemctl reload unbound 2>/dev/null || systemctl restart unbound
+  fi
+  success "Unbound РЅР°СЃС‚СЂРѕРµРЅ РґР»СЏ Docker-РїРѕРґСЃРµС‚РµР№"
 }
 
 remove_unbound_docker() {
-  log "Удаляю Docker-подсети из Unbound..."
+  log "РЈРґР°Р»СЏСЋ Docker-РїРѕРґСЃРµС‚Рё РёР· Unbound..."
   sed -i "/$MARKER/d" "$UNBOUND_CONF" 2>/dev/null
-  systemctl reload unbound 2>/dev/null || systemctl restart unbound
-  success "Docker-настройки Unbound удалены."
+  # Р’РѕР·РІСЂР°С‰Р°РµРј interface РЅР° localhost (restart РґР»СЏ РїРµСЂРµРїСЂРёРІСЏР·РєРё СЃРѕРєРµС‚Р°)
+  if grep -q "interface: 0.0.0.0" "$UNBOUND_CONF" 2>/dev/null; then
+    sed -i 's/interface: 0.0.0.0/interface: 127.0.0.1/' "$UNBOUND_CONF"
+    systemctl restart unbound
+  else
+    systemctl reload unbound 2>/dev/null || systemctl restart unbound
+  fi
+  success "Docker-РЅР°СЃС‚СЂРѕР№РєРё Unbound СѓРґР°Р»РµРЅС‹."
 }
 
 # =======================================================================
-# DNS DOCKER-ДЕМОНА
+# DNS DOCKER-Р”Р•РњРћРќРђ
 # =======================================================================
 
 configure_docker_dns() {
   check_docker || return 1
   local gateway
   gateway=$(get_docker_gateway)
-  [ -z "$gateway" ] && { error "Не удалось определить gateway."; return 1; }
+  [ -z "$gateway" ] && { error "РќРµ СѓРґР°Р»РѕСЃСЊ РѕРїСЂРµРґРµР»РёС‚СЊ gateway."; return 1; }
 
-  log "Настраиваю DNS Docker-демона на $gateway..."
-  local daemon_config="{}"
-  [ -f "$DAEMON_JSON" ] && daemon_config=$(python3 -c "import json; print(json.dumps(json.load(open('$DAEMON_JSON')), indent=2))")
-
+  log "РќР°СЃС‚СЂР°РёРІР°СЋ DNS Docker-РґРµРјРѕРЅР° РЅР° $gateway..."
   local new_config
-  new_config=$(python3 -c "
-import json
+  new_config=$(GATEWAY="$gateway" python3 << 'PYEOF'
+import json, os
+gw = os.environ["GATEWAY"]
 try:
-    cfg = json.loads('''$daemon_config''')
-except:
+    with open("/etc/docker/daemon.json") as f:
+        cfg = json.load(f)
+except Exception:
     cfg = {}
-cfg['dns'] = ['$gateway']
+cfg["dns"] = [gw]
 print(json.dumps(cfg, indent=2))
-" 2>/dev/null)
-
+PYEOF
+)
   if [ -n "$new_config" ]; then
     [ -f "$DAEMON_JSON" ] && cp "$DAEMON_JSON" "${DAEMON_JSON}.bak.$(date +%s)"
     echo "$new_config" > "$DAEMON_JSON"
@@ -940,93 +804,106 @@ print(json.dumps(cfg, indent=2))
     echo "{\"dns\": [\"$gateway\"]}" > "$DAEMON_JSON"
   fi
 
-  success "daemon.json: dns > $gateway"
-  log "Перезапуск Docker-демона..."
+  success "daemon.json: dns -> $gateway"
+  log "РџРµСЂРµР·Р°РїСѓСЃРє Docker-РґРµРјРѕРЅР°..."
   systemctl restart docker
-  success "Docker-демон перезапущен."
+  success "Docker-РґРµРјРѕРЅ РїРµСЂРµР·Р°РїСѓС‰РµРЅ."
   echo ""
-  warn "Пересоздайте контейнеры для применения DNS!"
+  warn "РџРµСЂРµСЃРѕР·РґР°Р№С‚Рµ РєРѕРЅС‚РµР№РЅРµСЂС‹ РґР»СЏ РїСЂРёРјРµРЅРµРЅРёСЏ DNS!"
   echo ""
 }
 
 remove_docker_dns() {
-  [ ! -f "$DAEMON_JSON" ] && { log "daemon.json не найден."; return 0; }
-  log "Удаляю DNS из Docker-демона..."
+  [ ! -f "$DAEMON_JSON" ] && { log "daemon.json РЅРµ РЅР°Р№РґРµРЅ."; return 0; }
+  log "РЈРґР°Р»СЏСЋ DNS РёР· Docker-РґРµРјРѕРЅР°..."
   local new_config
-  new_config=$(python3 -c "
+  new_config=$(python3 << 'PYEOF'
 import json
-with open('$DAEMON_JSON') as f:
-    cfg = json.load(f)
-cfg.pop('dns', None)
+try:
+    with open("/etc/docker/daemon.json") as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+cfg.pop("dns", None)
 if cfg:
     print(json.dumps(cfg, indent=2))
-" 2>/dev/null)
-
+PYEOF
+)
   if [ -z "$new_config" ]; then
     rm -f "$DAEMON_JSON"
   else
     echo "$new_config" > "$DAEMON_JSON"
   fi
   systemctl restart docker
-  success "DNS Docker-демона сброшен."
+  success "DNS Docker-РґРµРјРѕРЅР° СЃР±СЂРѕС€РµРЅ."
 }
 
 # =======================================================================
-# ПОЛНОЕ ВКЛЮЧЕНИЕ/ВЫКЛЮЧЕНИЕ
+# РџРћР›РќРћР• Р’РљР›Р®Р§Р•РќРР•/Р’Р«РљР›Р®Р§Р•РќРР•
 # =======================================================================
 
 enable_docker_blocking() {
-  log "Включаю блокировку для Docker-контейнеров..."
-  apply_docker_rules
+  log "Р’РєР»СЋС‡Р°СЋ Р±Р»РѕРєРёСЂРѕРІРєСѓ РґР»СЏ Docker-РєРѕРЅС‚РµР№РЅРµСЂРѕРІ..."
+  apply_docker_rules || return 1
   configure_unbound_docker
   if [ ! -f "$DAEMON_JSON" ] || ! grep -q '"dns"' "$DAEMON_JSON" 2>/dev/null; then
     echo ""
-    warn "DNS Docker-демона не настроен — блокировка доменов не будет работать."
+    warn "DNS Docker-РґРµРјРѕРЅР° РЅРµ РЅР°СЃС‚СЂРѕРµРЅ вЂ” РєРѕРЅС‚РµР№РЅРµСЂР°Рј Р±РµР· СЏРІРЅРѕРіРѕ dns: РЅСѓР¶РµРЅ 'dns-on'."
     if [ -t 0 ]; then
-      read -rp "Настроить DNS? (y/n): " setup_dns
-      [[ "$setup_dns" =~ ^[yYдД] ]] && configure_docker_dns
+      read -rp "РќР°СЃС‚СЂРѕРёС‚СЊ DNS СЃРµР№С‡Р°СЃ (РїРµСЂРµР·Р°РїСѓСЃС‚РёС‚ Docker)? (y/n): " setup_dns
+      [[ "$setup_dns" =~ ^[yYРґР”] ]] && configure_docker_dns
     else
-      log "Неинтерактивный режим — пропуск настройки DNS. Используйте 'dns-on' вручную."
+      log "РќРµРёРЅС‚РµСЂР°РєС‚РёРІРЅС‹Р№ СЂРµР¶РёРј вЂ” РїСЂРѕРїСѓСЃРє. РСЃРїРѕР»СЊР·СѓР№С‚Рµ 'dns-on' РІСЂСѓС‡РЅСѓСЋ."
     fi
   fi
-  success "Docker-блокировка включена."
+  success "Docker-Р±Р»РѕРєРёСЂРѕРІРєР° РІРєР»СЋС‡РµРЅР°."
 }
 
 disable_docker_blocking() {
-  log "Отключаю Docker-блокировку..."
+  log "РћС‚РєР»СЋС‡Р°СЋ Docker-Р±Р»РѕРєРёСЂРѕРІРєСѓ..."
   remove_docker_rules
-  success "Docker-блокировка отключена."
+  success "Docker-Р±Р»РѕРєРёСЂРѕРІРєР° РѕС‚РєР»СЋС‡РµРЅР°."
 }
 
 # =======================================================================
-# ПОДРОБНЫЙ СТАТУС
+# РЎРўРђРўРЈРЎ
 # =======================================================================
 
 show_docker_status() {
   echo ""
-  log "=== Подробный статус Docker-блокировки ==="
+  log "=== РЎРѕСЃС‚РѕСЏРЅРёРµ Р·Р°С‰РёС‚С‹ Docker-РєРѕРЅС‚РµР№РЅРµСЂРѕРІ ==="
   echo ""
 
   if [ -f "$DOCKER_CONFIG" ]; then
-    echo "  Контейнеры в конфиге:"
+    echo "  РљРѕРЅС‚РµР№РЅРµСЂС‹ РІ РєРѕРЅС„РёРіРµ:"
     while IFS= read -r name; do
       [ -z "$name" ] && continue
-      local state="\033[31mне запущен\033[0m"
-      docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name" && state="\033[32mзапущен\033[0m"
+      local state="\033[31mРЅРµ Р·Р°РїСѓС‰РµРЅ\033[0m"
+      docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name" && state="\033[32mР·Р°РїСѓС‰РµРЅ\033[0m"
       echo -e "    - $name ($state)"
     done < "$DOCKER_CONFIG"
   else
-    echo "  Конфиг: не найден"
+    echo "  РљРѕРЅС„РёРі: РЅРµ СЃРѕР·РґР°РЅ"
   fi
   echo ""
 
-  echo "  Правила DOCKER-USER:"
+  echo "  РџСЂР°РІРёР»Р° DOCKER-USER:"
   local rules
-  rules=$(iptables -L DOCKER-USER -n 2>/dev/null | grep "blocked_ips" || true)
+  rules=$(iptables -S DOCKER-USER 2>/dev/null | grep -E "$IPSET_NAME|$ALLOW_SET" || true)
   if [ -n "$rules" ]; then
     echo "$rules" | while IFS= read -r line; do echo "    $line"; done
   else
-    echo "    (нет правил)"
+    echo "    (РЅРµС‚ РїСЂР°РІРёР»)"
+  fi
+  echo ""
+
+  echo "  DNAT DNS (nat/PREROUTING):"
+  local dnat
+  dnat=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- '--dport 53 .*--to-destination' || true)
+  if [ -n "$dnat" ]; then
+    echo "$dnat" | while IFS= read -r line; do echo "    $line"; done
+  else
+    echo "    (РЅРµС‚ РїСЂР°РІРёР»)"
   fi
   echo ""
 
@@ -1036,17 +913,17 @@ show_docker_status() {
   if [ -n "$unbound_rules" ]; then
     echo "$unbound_rules" | while IFS= read -r line; do echo "    $line"; done
   else
-    echo "    (нет)"
+    echo "    (РЅРµС‚)"
   fi
   echo ""
 
-  echo "  DNS Docker-демона:"
+  echo "  DNS Docker-РґРµРјРѕРЅР°:"
   if [ -f "$DAEMON_JSON" ] && grep -q '"dns"' "$DAEMON_JSON" 2>/dev/null; then
     local dns_val
-    dns_val=$(python3 -c "import json; print(json.load(open('$DAEMON_JSON')).get('dns','---'))" 2>/dev/null || echo "---")
+    dns_val=$(python3 -c "import json; print(json.load(open('/etc/docker/daemon.json')).get('dns','---'))" 2>/dev/null || echo "---")
     echo "    $dns_val"
   else
-    echo "    (не настроен)"
+    echo "    (РЅРµ РЅР°СЃС‚СЂРѕРµРЅ)"
   fi
   echo ""
 }
@@ -1078,34 +955,31 @@ case "${1:-}" in
     remove_unbound_docker
     remove_docker_dns
     rm -f "$DOCKER_CONFIG"
-    systemctl stop docker-block-restore.service 2>/dev/null
-    systemctl disable docker-block-restore.service 2>/dev/null
-    rm -f /etc/systemd/system/docker-block-restore.service
     systemctl daemon-reload 2>/dev/null
-    success "Полная очистка Docker-блокировки завершена."
+    success "РџРѕР»РЅР°СЏ РѕС‡РёСЃС‚РєР° Docker-Р±Р»РѕРєРёСЂРѕРІРєРё Р·Р°РІРµСЂС€РµРЅР°."
     ;;
   *)
-    echo "WhiteVPN Docker — управление блокировкой контейнеров"
+    echo "WhiteVPN Docker вЂ” Р±Р»РѕРєРёСЂРѕРІРєР° С‚СЂР°С„РёРєР° РєРѕРЅС‚РµР№РЅРµСЂРѕРІ (v$VERSION)"
     echo ""
-    echo "Использование: $0 <команда>"
+    echo "РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: $0 <РєРѕРјР°РЅРґР°>"
     echo ""
-    echo "  scan               — сканирование контейнеров"
-    echo "  scan-json          — сканирование (JSON)"
-    echo "  auto-setup         — автонастройка (с подтверждением)"
-    echo "  auto-setup-confirm — автонастройка (без подтверждения)"
-    echo "  brief-status       — краткий статус (для меню)"
-    echo "  select             — ручной выбор контейнеров"
-    echo "  list-containers    — список контейнеров (JSON)"
-    echo "  select-by-name     — выбор по имени"
-    echo "  enable             — включить блокировку"
-    echo "  disable            — отключить блокировку"
-    echo "  status             — подробный статус"
-    echo "  apply-ipt          — только iptables"
-    echo "  remove-ipt         — удалить iptables"
-    echo "  unbound-on         — Unbound для Docker"
-    echo "  unbound-off        — убрать Docker из Unbound"
-    echo "  dns-on             — DNS демона > Unbound"
-    echo "  dns-off            — DNS демона > по умолчанию"
-    echo "  cleanup            — полная очистка"
+    echo "  scan               вЂ” СЃРєР°РЅРёСЂРѕРІР°РЅРёРµ РєРѕРЅС‚РµР№РЅРµСЂРѕРІ"
+    echo "  scan-json          вЂ” СЃРєР°РЅРёСЂРѕРІР°РЅРёРµ (JSON)"
+    echo "  auto-setup         вЂ” Р°РІС‚РѕРЅР°СЃС‚СЂРѕР№РєР° (СЃ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРµРј)"
+    echo "  auto-setup-confirm вЂ” Р°РІС‚РѕРЅР°СЃС‚СЂРѕР№РєР° (Р±РµР· РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ)"
+    echo "  brief-status       вЂ” РєСЂР°С‚РєРёР№ СЃС‚Р°С‚СѓСЃ (РґР»СЏ РјРµРЅСЋ)"
+    echo "  select             вЂ” СЂСѓС‡РЅРѕР№ РІС‹Р±РѕСЂ РєРѕРЅС‚РµР№РЅРµСЂРѕРІ"
+    echo "  list-containers    вЂ” СЃРїРёСЃРѕРє РєРѕРЅС‚РµР№РЅРµСЂРѕРІ (JSON)"
+    echo "  select-by-name     вЂ” РІС‹Р±РѕСЂ РїРѕ РёРјРµРЅР°Рј"
+    echo "  enable             вЂ” РІРєР»СЋС‡РёС‚СЊ Р±Р»РѕРєРёСЂРѕРІРєСѓ"
+    echo "  disable            вЂ” РѕС‚РєР»СЋС‡РёС‚СЊ Р±Р»РѕРєРёСЂРѕРІРєСѓ"
+    echo "  status             вЂ” РїРѕРґСЂРѕР±РЅС‹Р№ СЃС‚Р°С‚СѓСЃ"
+    echo "  apply-ipt          вЂ” С‚РѕР»СЊРєРѕ РїСЂР°РІРёР»Р° iptables (+DNAT)"
+    echo "  remove-ipt         вЂ” СѓР±СЂР°С‚СЊ РїСЂР°РІРёР»Р° iptables (+DNAT)"
+    echo "  unbound-on         вЂ” Unbound РґР»СЏ Docker"
+    echo "  unbound-off        вЂ” СѓР±СЂР°С‚СЊ Docker РёР· Unbound"
+    echo "  dns-on             вЂ” DNS РґРµРјРѕРЅР° -> Unbound"
+    echo "  dns-off            вЂ” DNS РґРµРјРѕРЅР° -> РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ"
+    echo "  cleanup            вЂ” РїРѕР»РЅР°СЏ РѕС‡РёСЃС‚РєР°"
     ;;
 esac
