@@ -422,7 +422,7 @@ def get_ipset_count():
     return 0
 
 
-MAX_UNBOUND_DOMAINS = 50000  # Unbound hangs with 80K+ on 2GB VPS
+MAX_UNBOUND_DOMAINS = 100000  # 79k зон на 2ГБ = ~43МБ RAM (проверено)
 
 
 def get_domains_count():
