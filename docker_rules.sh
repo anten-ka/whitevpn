@@ -690,8 +690,10 @@ configure_unbound_docker() {
   [ -z "$subnets" ] && { error "Нет подсетей."; return 1; }
 
   log "Настраиваю Unbound для Docker..."
+  local iface_changed=0
   if grep -q "interface: 127.0.0.1" "$UNBOUND_CONF" 2>/dev/null; then
     sed -i 's/interface: 127.0.0.1/interface: 0.0.0.0/' "$UNBOUND_CONF"
+    iface_changed=1
     success "Unbound: interface -> 0.0.0.0"
   fi
   while IFS= read -r subnet; do
@@ -701,14 +703,27 @@ configure_unbound_docker() {
       success "Unbound: access-control $subnet"
     fi
   done <<< "$subnets"
-  systemctl reload unbound 2>/dev/null || systemctl restart unbound
+  # ВАЖНО: смена interface требует полного restart — reload НЕ перепривязывает сокеты,
+  # unbound останется слушать 127.0.0.1 и контейнеры не достучатся до DNS.
+  if [ "$iface_changed" = "1" ]; then
+    systemctl restart unbound
+    success "Unbound перезапущен (interface 0.0.0.0)"
+  else
+    systemctl reload unbound 2>/dev/null || systemctl restart unbound
+  fi
   success "Unbound настроен для Docker-подсетей"
 }
 
 remove_unbound_docker() {
   log "Удаляю Docker-подсети из Unbound..."
   sed -i "/$MARKER/d" "$UNBOUND_CONF" 2>/dev/null
-  systemctl reload unbound 2>/dev/null || systemctl restart unbound
+  # Возвращаем interface на localhost (restart для перепривязки сокета)
+  if grep -q "interface: 0.0.0.0" "$UNBOUND_CONF" 2>/dev/null; then
+    sed -i 's/interface: 0.0.0.0/interface: 127.0.0.1/' "$UNBOUND_CONF"
+    systemctl restart unbound
+  else
+    systemctl reload unbound 2>/dev/null || systemctl restart unbound
+  fi
   success "Docker-настройки Unbound удалены."
 }
 
