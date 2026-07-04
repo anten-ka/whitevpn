@@ -19,10 +19,26 @@ UNBOUND_CONF = "/etc/unbound/unbound.conf"
 BLOCKED_CONF = "/etc/unbound/blocked-domains.conf"
 WHITELIST_ZONES_CONF = "/etc/unbound/whitelist-zones.conf"
 
-# Максимум зон в конфиге Unbound. Проверено: 79k зон на 2ГБ VPS = ~43МБ RAM,
-# резолв 2мс — лимит 50k был перестраховкой. Коллапс к родителям (см. ниже)
-# ещё уменьшает список, так что обрезка при текущих списках не нужна.
-MAX_UNBOUND_DOMAINS = 100000
+def compute_domain_limit():
+    """Лимит зон Unbound — это НЕ функциональное ограничение (реальный refilter-
+    список ~86k, коллапс уменьшает его ещё), а страховка от runaway-источника
+    (битый/раздутый JSON с миллионами записей → OOM на крошечном VPS).
+
+    Замерено на 2ГБ VPS: ~0.45 МБ RAM на 1000 зон (100k=59МБ, 500k=224МБ, резолв
+    2-3мс). Разрешаем зонам занять до ~15% ОЗУ; пол 100k (реальный список всегда
+    влезает), потолок 1M. На 2ГБ выходит ~680k — обрезки при реальных списках нет.
+    """
+    try:
+        with open("/proc/meminfo") as f:
+            total_kb = int(next(l for l in f if l.startswith("MemTotal")).split()[1])
+        total_mb = total_kb / 1024
+        limit = int(total_mb * 0.15 / 0.00045)  # 0.45МБ/1000 зон
+        return max(100000, min(limit, 1000000))
+    except Exception:
+        return 200000
+
+
+MAX_UNBOUND_DOMAINS = compute_domain_limit()
 
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
