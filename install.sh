@@ -170,7 +170,7 @@ if command -v docker &>/dev/null; then
         [[ -z "$line" ]] && continue
         local_name=$(echo "$line" | awk '{print $1}')
         local_image=$(echo "$line" | awk '{print $2}')
-        if [[ "$local_name$local_image" =~ amnezia|wireguard|openvpn|vpn ]]; then
+        if [[ "$local_name$local_image" =~ amneziawg|amnezia|awg|wireguard|wg-easy|wg-quick|openvpn|outline|shadowbox|softether|ipsec|strongswan ]]; then
             DOCKER_NAMES+=("$local_name")
             DOCKER_FOUND=1
         fi

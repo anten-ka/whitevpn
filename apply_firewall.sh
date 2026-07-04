@@ -25,6 +25,10 @@ STATE_FILE="${CONFIG_DIR}/protection_state"
 IPSET_SAVE_FILE="/etc/ipset.rules"
 BLOCK_SET="blocked_ips"
 ALLOW_SET="whitevpn_allow"
+DOH_SET="whitevpn_doh"
+# Известные IP публичных DoH/DoT-резолверов (выделенные, не CDN — блок на 443/853
+# безопасен). Без этого клиент обходит DNS-блокировку через DNS-over-HTTPS.
+DOH_IPS="1.1.1.1 1.0.0.1 1.1.1.2 1.0.0.2 1.1.1.3 1.0.0.3 8.8.8.8 8.8.4.4 9.9.9.9 9.9.9.10 9.9.9.11 149.112.112.112 149.112.112.10 149.112.112.11 94.140.14.14 94.140.15.15 94.140.14.140 94.140.14.141 208.67.222.222 208.67.220.220 185.228.168.9 185.228.169.9 76.76.2.0 76.76.10.0 45.90.28.0 45.90.30.0 77.88.8.8 77.88.8.1 223.5.5.5 223.6.6.6"
 DOCKER_RULES="${INSTALL_DIR}/docker_rules.sh"
 DOCKER_CONFIG="${CONFIG_DIR}/docker_containers.conf"
 LOG_PREFIX="WHITEVPN_BLOCK: "
@@ -43,6 +47,10 @@ ensure_sets() {
   fi
   ipset create "$BLOCK_SET" hash:net maxelem 2097152 -exist
   ipset create "$ALLOW_SET" hash:net maxelem 65536 -exist
+  # DoH/DoT-резолверы
+  ipset create "$DOH_SET" hash:ip maxelem 1024 -exist
+  local dip
+  for dip in $DOH_IPS; do ipset add "$DOH_SET" "$dip" -exist 2>/dev/null; done
 }
 
 save_sets() {
@@ -63,11 +71,18 @@ PRIVATE_NETS_HOST="127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0
 
 xray_ssrf_up() {
   local pnet
+  # исключение: xray резолвит через локальный Unbound 127.0.0.1:53 — не дропать
   iptables -C OUTPUT -m mark --mark $XRAY_MARK -d 127.0.0.1 -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I OUTPUT 1 -m mark --mark $XRAY_MARK -d 127.0.0.1 -p udp --dport 53 -j ACCEPT
   iptables -C OUTPUT -m mark --mark $XRAY_MARK -d 127.0.0.1 -p tcp --dport 53 -j ACCEPT 2>/dev/null || iptables -I OUTPUT 1 -m mark --mark $XRAY_MARK -d 127.0.0.1 -p tcp --dport 53 -j ACCEPT
+  # приватные диапазоны (SSRF)
   for pnet in $PRIVATE_NETS_HOST; do
-    iptables -C OUTPUT -m mark --mark $XRAY_MARK -d "$pnet" -j DROP 2>/dev/null ||       iptables -A OUTPUT -m mark --mark $XRAY_MARK -d "$pnet" -j DROP
+    iptables -C OUTPUT -m mark --mark $XRAY_MARK -d "$pnet" -j DROP 2>/dev/null || iptables -A OUTPUT -m mark --mark $XRAY_MARK -d "$pnet" -j DROP
   done
+  # DoT (853)
+  iptables -C OUTPUT -m mark --mark $XRAY_MARK -p tcp --dport 853 -j DROP 2>/dev/null || iptables -A OUTPUT -m mark --mark $XRAY_MARK -p tcp --dport 853 -j DROP
+  # DoH (443 tcp+udp) к известным DoH-резолверам
+  iptables -C OUTPUT -m mark --mark $XRAY_MARK -m set --match-set $DOH_SET dst -p tcp --dport 443 -j DROP 2>/dev/null || iptables -A OUTPUT -m mark --mark $XRAY_MARK -m set --match-set $DOH_SET dst -p tcp --dport 443 -j DROP
+  iptables -C OUTPUT -m mark --mark $XRAY_MARK -m set --match-set $DOH_SET dst -p udp --dport 443 -j DROP 2>/dev/null || iptables -A OUTPUT -m mark --mark $XRAY_MARK -m set --match-set $DOH_SET dst -p udp --dport 443 -j DROP
 }
 xray_ssrf_down() {
   local pnet
@@ -77,6 +92,8 @@ xray_ssrf_down() {
     iptables -D OUTPUT -m mark --mark $XRAY_MARK -d "$pnet" -j DROP 2>/dev/null
   done
   iptables -D OUTPUT -m mark --mark $XRAY_MARK -p tcp --dport 853 -j DROP 2>/dev/null
+  iptables -D OUTPUT -m mark --mark $XRAY_MARK -m set --match-set $DOH_SET dst -p tcp --dport 443 -j DROP 2>/dev/null
+  iptables -D OUTPUT -m mark --mark $XRAY_MARK -m set --match-set $DOH_SET dst -p udp --dport 443 -j DROP 2>/dev/null
 }
 
 host_rules_up() {
@@ -217,6 +234,7 @@ purge_sets() {
   ipset destroy "$ALLOW_SET" 2>/dev/null
   ipset destroy "${BLOCK_SET}_tmp" 2>/dev/null
   ipset destroy "${ALLOW_SET}_tmp" 2>/dev/null
+  ipset destroy "$DOH_SET" 2>/dev/null
   rm -f "$IPSET_SAVE_FILE"
   success "ipset-наборы уничтожены"
 }

@@ -27,6 +27,7 @@ DOCKER_CONFIG="/etc/block-ips/docker_containers.conf"
 UNBOUND_CONF="/etc/unbound/unbound.conf"
 IPSET_NAME="blocked_ips"
 ALLOW_SET="whitevpn_allow"
+DOH_SET="whitevpn_doh"
 DAEMON_JSON="/etc/docker/daemon.json"
 MARKER="# whitevpn-docker"
 LOG_PREFIX="WHITEVPN_BLOCK: "
@@ -635,6 +636,7 @@ apply_docker_rules() {
   [ -z "$pairs" ] && { error "Нет подсетей. Выберите контейнеры сначала (select / auto-setup)."; return 1; }
   ipset list "$IPSET_NAME" -t &>/dev/null || { error "ipset '$IPSET_NAME' не существует. Запустите обновление списков."; return 1; }
   ipset create "$ALLOW_SET" hash:net maxelem 65536 -exist
+  ipset create "$DOH_SET" hash:ip maxelem 1024 -exist
 
   log "Применяю правила DOCKER-USER + DNAT DNS..."
   local subnet gateway proto pnet
@@ -674,8 +676,10 @@ apply_docker_rules() {
         iptables -t nat -I PREROUTING -s "$subnet" -p "$proto" --dport 53 ! -d "$gateway" -j DNAT --to-destination "${gateway}:53"
       fi
     done
-    # DoT (853) — не давать клиенту обойти DNS-блок через DNS-over-TLS
+    # DoT (853) + DoH (443 к известным резолверам) — обход DNS-блока
     iptables -C DOCKER-USER -s "$subnet" -p tcp --dport 853 -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -p tcp --dport 853 -j DROP
+    iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$DOH_SET" dst -p tcp --dport 443 -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -m set --match-set "$DOH_SET" dst -p tcp --dport 443 -j DROP
+    iptables -C DOCKER-USER -s "$subnet" -m set --match-set "$DOH_SET" dst -p udp --dport 443 -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -m set --match-set "$DOH_SET" dst -p udp --dport 443 -j DROP
     success "DNAT DNS: $subnet -> ${gateway}:53"
   done <<< "$pairs"
 
@@ -707,7 +711,7 @@ remove_docker_rules() {
   while IFS= read -r rule; do
     [ -z "$rule" ] && continue
     eval "iptables -D DOCKER-USER ${rule#-A DOCKER-USER }" 2>/dev/null && ((removed++))
-  done < <(iptables -S DOCKER-USER 2>/dev/null | grep -E "10.0.0.0/8|127.0.0.0/8|172.16.0.0/12|192.168.0.0/16|169.254|100.64|dport 53 -j ACCEPT|dport 853")
+  done < <(iptables -S DOCKER-USER 2>/dev/null | grep -E "10.0.0.0/8|127.0.0.0/8|172.16.0.0/12|192.168.0.0/16|169.254|100.64|dport 53 -j ACCEPT|dport 853|whitevpn_doh")
 
   while IFS= read -r rule; do
     [ -z "$rule" ] && continue

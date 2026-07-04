@@ -19,10 +19,10 @@ UNBOUND_CONF = "/etc/unbound/unbound.conf"
 BLOCKED_CONF = "/etc/unbound/blocked-domains.conf"
 WHITELIST_ZONES_CONF = "/etc/unbound/whitelist-zones.conf"
 
-# Максимум доменов в конфиге Unbound (на слабых VPS Unbound с 80K+ зон
-# стартует очень долго). Лимит применяется детерминированно (sort),
-# force-block домены добавляются всегда.
-MAX_UNBOUND_DOMAINS = 50000
+# Максимум зон в конфиге Unbound. Проверено: 79k зон на 2ГБ VPS = ~43МБ RAM,
+# резолв 2мс — лимит 50k был перестраховкой. Коллапс к родителям (см. ниже)
+# ещё уменьшает список, так что обрезка при текущих списках не нужна.
+MAX_UNBOUND_DOMAINS = 100000
 
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
@@ -168,6 +168,24 @@ def get_latest_release_url():
         return None
 
 
+def collapse_to_parents(domains):
+    """Убрать домены, чей родитель тоже в наборе: local-zone always_nxdomain в
+    Unbound покрывает и все поддомены. Уменьшает список (часто ниже лимита) и
+    улучшает покрытие по сравнению с алфавитной обрезкой."""
+    dset = set(domains)
+    result = set()
+    for d in dset:
+        parts = d.split(".")
+        covered = False
+        for i in range(1, len(parts)):
+            if ".".join(parts[i:]) in dset:
+                covered = True
+                break
+        if not covered:
+            result.add(d)
+    return result
+
+
 def is_subdomain_of_whitelist(domain, whitelist):
     """Домен или его родитель есть в белом списке?"""
     domain = domain.lower()
@@ -286,6 +304,11 @@ def fetch_and_block_domains():
 
     log_to_file(f"Исключено из блокировки (whitelist): {whitelisted_count} доменов")
     log_to_file(f"Осталось для блокировки: {len(filtered_domains)} (было {blocked_count_before})")
+
+    # Коллапс к родителям (always_nxdomain покрывает поддомены) — меньше и полнее
+    before_collapse = len(filtered_domains)
+    filtered_domains = collapse_to_parents(filtered_domains)
+    log_to_file(f"После коллапса к родителям: {len(filtered_domains)} (было {before_collapse})")
 
     # Детерминированный лимит: сортируем и режем, force-block — всегда в списке
     domains_sorted = sorted(filtered_domains)
