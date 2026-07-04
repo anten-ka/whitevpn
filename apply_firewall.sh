@@ -130,6 +130,7 @@ ipv6_up() {
 }
 
 ipv6_down() {
+  sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1  # вернуть форвардинг (нужен VPN)
   if command -v ip6tables &>/dev/null; then
     ip6tables -D FORWARD -j DROP 2>/dev/null
     ip6tables -D FORWARD -p ipv6-icmp -j ACCEPT 2>/dev/null
@@ -210,9 +211,20 @@ fw_status() {
   return 0
 }
 
+purge_sets() {
+  host_rules_down
+  ipset destroy "$BLOCK_SET" 2>/dev/null
+  ipset destroy "$ALLOW_SET" 2>/dev/null
+  ipset destroy "${BLOCK_SET}_tmp" 2>/dev/null
+  ipset destroy "${ALLOW_SET}_tmp" 2>/dev/null
+  rm -f "$IPSET_SAVE_FILE"
+  success "ipset-наборы уничтожены"
+}
+
 case "${1:-}" in
   up)          fw_up ;;
   down)        fw_down ;;
+  purge)       purge_sets ;;
   boot)        fw_boot ;;
   ensure-sets) ensure_sets ;;
   save)        save_sets ;;

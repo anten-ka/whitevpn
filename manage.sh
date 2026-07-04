@@ -285,7 +285,7 @@ uninstall() {
 
   [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" cleanup 2>/dev/null
 
-  [ -x "$SYSTEM_DIR/apply_firewall.sh" ] && bash "$SYSTEM_DIR/apply_firewall.sh" down 2>/dev/null
+  [ -x "$SYSTEM_DIR/apply_firewall.sh" ] && bash "$SYSTEM_DIR/apply_firewall.sh" purge 2>/dev/null
   systemctl disable whitevpn-firewall 2>/dev/null
   rm -f /etc/systemd/system/block-ips-bot.service
   rm -f /etc/systemd/system/whitevpn-update.service
