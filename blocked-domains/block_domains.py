@@ -133,7 +133,22 @@ def load_force_block_domains(config):
 
 
 def get_latest_release_url():
-    """URL последнего релиза Re-filter-lists через GitHub API."""
+    """URL актуального списка доменов Re-filter-lists.
+
+    Приоритет — прямая ссылка github.com/releases/latest/download (НЕ требует
+    api.github.com, который сам в refilter-блоклисте). API — как запасной путь.
+    """
+    direct = ("https://github.com/1andrevich/Re-filter-lists/releases/latest/"
+              "download/ruleset-domain-refilter_domains.json")
+    try:
+        r = requests.head(direct, timeout=15, allow_redirects=True)
+        if r.status_code == 200:
+            log_to_file(f"Прямая ссылка релиза доступна: {direct}")
+            return direct
+        log_to_file(f"Прямая ссылка вернула {r.status_code}, пробуем API")
+    except Exception as e:
+        log_to_file(f"Прямая ссылка недоступна ({e}), пробуем API")
+
     api_url = "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest"
     try:
         response = requests.get(api_url, timeout=15)
@@ -149,16 +164,6 @@ def get_latest_release_url():
         return fallback_url
     except Exception as e:
         log_to_file(f"Ошибка получения релиза через API: {e}")
-        # Fallback: raw-эндпоинт GitHub (не требует api.github.com, который может быть заблокирован)
-        for branch in ("main", "master"):
-            raw_url = f"https://raw.githubusercontent.com/1andrevich/Re-filter-lists/{branch}/ruleset-domain-refilter_domains.json"
-            try:
-                r = requests.head(raw_url, timeout=10, allow_redirects=True)
-                if r.status_code == 200:
-                    log_to_file(f"Fallback URL доступен: {raw_url}")
-                    return raw_url
-            except Exception:
-                pass
         return None
 
 
@@ -229,16 +234,23 @@ def ensure_unbound_conf():
 
 
 def fetch_and_block_domains():
-    url = get_latest_release_url()
-    if url is None:
-        print("Не удалось определить URL списка доменов")
-        log_to_file("Не удалось определить URL списка доменов")
-        return
-
     config = load_whitelist_config()
     whitelist = load_whitelist_domains(config)
     whitelist |= SYSTEM_WHITELIST_DOMAINS  # инфраструктура WhiteVPN — всегда исключена
     force_block = load_force_block_domains(config)
+
+    # Bootstrap: сразу пишем whitelist-зоны (transparent), чтобы инфраструктура
+    # (github и т.п.) резолвилась даже если её ранее заблокировали — иначе фетч
+    # не сможет достучаться до источника.
+    write_whitelist_zones(whitelist)
+    ensure_unbound_conf()
+    subprocess.run(["systemctl", "reload", "unbound"], capture_output=True)
+
+    url = get_latest_release_url()
+    if url is None:
+        print("Не удалось определить URL списка доменов (источник недоступен)")
+        log_to_file("Не удалось определить URL списка доменов")
+        return
 
     try:
         log_to_file(f"Загрузка списка доменов: {url}")
