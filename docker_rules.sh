@@ -406,8 +406,11 @@ auto_setup() {
   apply_docker_rules
   configure_unbound_docker
 
-  local new_config
-  new_config=$(GATEWAY="$gateway" python3 << 'PYEOF'
+  # Перечитываем gateway (переменную мог не сохранить apply_docker_rules) и проверяем
+  gateway=$(get_docker_gateway)
+  if [ -n "$gateway" ]; then
+    local new_config
+    new_config=$(GATEWAY="$gateway" python3 << 'PYEOF'
 import json, os
 gw = os.environ["GATEWAY"]
 try:
@@ -419,10 +422,13 @@ cfg["dns"] = [gw]
 print(json.dumps(cfg, indent=2))
 PYEOF
 )
-  if [ -n "$new_config" ]; then
-    [ -f "$DAEMON_JSON" ] && cp "$DAEMON_JSON" "${DAEMON_JSON}.bak.$(date +%s)"
-    echo "$new_config" > "$DAEMON_JSON"
-    success "daemon.json: dns -> $gateway"
+    if [ -n "$new_config" ]; then
+      [ -f "$DAEMON_JSON" ] && cp "$DAEMON_JSON" "${DAEMON_JSON}.bak.$(date +%s)"
+      echo "$new_config" > "$DAEMON_JSON"
+      success "daemon.json: dns -> $gateway"
+    fi
+  else
+    warn "gateway пуст — daemon.json не изменён (DNAT :53 всё равно направит DNS в Unbound)"
   fi
 
   for i in "${!vpn_names[@]}"; do
@@ -628,6 +634,7 @@ apply_docker_rules() {
   ipset create "$ALLOW_SET" hash:net maxelem 65536 -exist
 
   log "Применяю правила DOCKER-USER + DNAT DNS..."
+  local subnet gateway proto
   while IFS='|' read -r subnet gateway; do
     [ -z "$subnet" ] && continue
 
