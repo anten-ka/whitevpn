@@ -6,7 +6,7 @@
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
-VERSION="0.8"
+VERSION="0.9"
 INSTALL_DIR="/opt/block-traffic"
 CONFIG_DIR="/etc/block-ips"
 BOT_CONFIG="${CONFIG_DIR}/bot_config.json"
@@ -259,8 +259,22 @@ ok "Файлы проекта скопированы"
 log "Создание Python venv..."
 python3 -m venv "$INSTALL_DIR/venv" >> "$LOG" 2>&1
 "$INSTALL_DIR/venv/bin/pip" install --upgrade pip >> "$LOG" 2>&1
-"$INSTALL_DIR/venv/bin/pip" install aiogram==3.5.0 requests >> "$LOG" 2>&1
-ok "Python venv (aiogram 3.5.0, requests)"
+
+# requests — ОБЯЗАТЕЛЬНАЯ зависимость ядра блокировки (block_ips/block_domains)
+if "$INSTALL_DIR/venv/bin/pip" install requests >> "$LOG" 2>&1; then
+    ok "Python: requests установлен"
+else
+    err "requests не установился — блокировка IP/доменов НЕ будет работать!"
+fi
+
+# aiogram — только для Telegram-бота (опционально). Без пина версии, иначе на
+# свежих Python (3.13/3.14 в Ubuntu 25.10/26.04) старый pydantic-core не собирается.
+if "$INSTALL_DIR/venv/bin/pip" install "aiogram>=3.13,<4" >> "$LOG" 2>&1; then
+    AIOGRAM_VER=$("$INSTALL_DIR/venv/bin/pip" show aiogram 2>/dev/null | awk "/^Version:/{print \$2}")
+    ok "Python: aiogram ${AIOGRAM_VER} установлен (Telegram-бот)"
+else
+    warn "aiogram не установился — бот недоступен, но блокировка работает"
+fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 7. Настройка Unbound DNS

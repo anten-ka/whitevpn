@@ -1,10 +1,11 @@
 import requests
 import json
+import fcntl
 import subprocess
 import os
 from datetime import datetime
 
-VERSION = "0.8"
+VERSION = "0.9"
 
 # Определение директорий
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -339,6 +340,13 @@ def fetch_and_block_domains():
             log_to_file(f"Ошибка перезагрузки Unbound: {e}")
 
 
+LOCK_FILE = "/tmp/whitevpn-blockdomains.lock"
+
 if __name__ == "__main__":
+    _lock = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(_lock, fcntl.LOCK_EX)
+    except Exception:
+        pass
     fetch_and_block_domains()
     print(f"Лог сохранён: {LOG_FILE}")

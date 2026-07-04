@@ -30,7 +30,10 @@ ALLOW_SET="whitevpn_allow"
 DAEMON_JSON="/etc/docker/daemon.json"
 MARKER="# whitevpn-docker"
 LOG_PREFIX="WHITEVPN_BLOCK: "
-VERSION="0.8"
+# Приватные/служебные диапазоны — VPN-клиент не должен достучаться до внутренней
+# сети сервера (SSRF: панель, соседние контейнеры, облачные метаданные 169.254).
+PRIVATE_NETS="127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10"
+VERSION="0.9"
 
 log()     { echo -e "\033[34m[INFO]\033[0m $1"; }
 success() { echo -e "\033[32m[OK]\033[0m $1"; }
@@ -634,9 +637,22 @@ apply_docker_rules() {
   ipset create "$ALLOW_SET" hash:net maxelem 65536 -exist
 
   log "Применяю правила DOCKER-USER + DNAT DNS..."
-  local subnet gateway proto
+  local subnet gateway proto pnet
   while IFS='|' read -r subnet gateway; do
     [ -z "$subnet" ] && continue
+
+    # Блок приватных диапазонов (SSRF-защита) — ПЕРЕД whitelist, чтобы клиент
+    # не мог достучаться до внутренней сети сервера даже через whitelisted-адрес.
+    for pnet in $PRIVATE_NETS; do
+      if ! iptables -C DOCKER-USER -s "$subnet" -d "$pnet" -j DROP 2>/dev/null; then
+        iptables -I DOCKER-USER 1 -s "$subnet" -d "$pnet" -j DROP
+      fi
+    done
+    # Исключение: gateway:53 (наш Unbound через DNAT) — нужен для DNS. DNAT ниже
+    # перенаправит :53 на gateway; ответ идёт по established, а прямой доступ к
+    # другим портам gateway/приватным — закрыт правилом выше.
+    iptables -C DOCKER-USER -s "$subnet" -d "$gateway" -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -d "$gateway" -p udp --dport 53 -j ACCEPT
+    iptables -C DOCKER-USER -s "$subnet" -d "$gateway" -p tcp --dport 53 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -d "$gateway" -p tcp --dport 53 -j ACCEPT
 
     # Порядок в цепочке: RETURN(белый список) -> LOG -> DROP.
     # Вставляем в обратном порядке, каждый раз в начало цепочки.
@@ -658,8 +674,25 @@ apply_docker_rules() {
         iptables -t nat -I PREROUTING -s "$subnet" -p "$proto" --dport 53 ! -d "$gateway" -j DNAT --to-destination "${gateway}:53"
       fi
     done
+    # DoT (853) — не давать клиенту обойти DNS-блок через DNS-over-TLS
+    iptables -C DOCKER-USER -s "$subnet" -p tcp --dport 853 -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -s "$subnet" -p tcp --dport 853 -j DROP
     success "DNAT DNS: $subnet -> ${gateway}:53"
   done <<< "$pairs"
+
+  # Host-guard: трафик контейнер->ХОСТ (gateway IP) идёт через INPUT, а не
+  # DOCKER-USER. Без этого VPN-клиент достучится до сервисов хоста (панель x-ui,
+  # SSH) по IP gateway. Отдельная цепочка: пускаем только DNS к gateway:53,
+  # остальное контейнер->хост режем. Не-docker трафик (наш SSH) не матчится.
+  iptables -N WHITEVPN_HOSTGUARD 2>/dev/null
+  iptables -F WHITEVPN_HOSTGUARD
+  local sn
+  while IFS= read -r sn; do
+    [ -z "$sn" ] && continue
+    iptables -A WHITEVPN_HOSTGUARD -s "$sn" -p udp --dport 53 -j RETURN
+    iptables -A WHITEVPN_HOSTGUARD -s "$sn" -p tcp --dport 53 -j RETURN
+    iptables -A WHITEVPN_HOSTGUARD -s "$sn" -j DROP
+  done <<< "$(get_configured_subnets)"
+  iptables -C INPUT -j WHITEVPN_HOSTGUARD 2>/dev/null || iptables -I INPUT 1 -j WHITEVPN_HOSTGUARD
 }
 
 remove_docker_rules() {
@@ -670,12 +703,21 @@ remove_docker_rules() {
     [ -z "$rule" ] && continue
     eval "iptables -D DOCKER-USER ${rule#-A DOCKER-USER }" 2>/dev/null && ((removed++))
   done < <(iptables -S DOCKER-USER 2>/dev/null | grep -E "match-set ($IPSET_NAME|$ALLOW_SET) dst")
+  # приватные DROP и gateway:53 ACCEPT
+  while IFS= read -r rule; do
+    [ -z "$rule" ] && continue
+    eval "iptables -D DOCKER-USER ${rule#-A DOCKER-USER }" 2>/dev/null && ((removed++))
+  done < <(iptables -S DOCKER-USER 2>/dev/null | grep -E "10.0.0.0/8|127.0.0.0/8|172.16.0.0/12|192.168.0.0/16|169.254|100.64|dport 53 -j ACCEPT|dport 853")
 
   while IFS= read -r rule; do
     [ -z "$rule" ] && continue
     eval "iptables -t nat -D PREROUTING ${rule#-A PREROUTING }" 2>/dev/null && ((removed++))
   done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- '--dport 53 .*--to-destination')
 
+  # host-guard
+  iptables -D INPUT -j WHITEVPN_HOSTGUARD 2>/dev/null
+  iptables -F WHITEVPN_HOSTGUARD 2>/dev/null
+  iptables -X WHITEVPN_HOSTGUARD 2>/dev/null
   success "Удалено правил: $removed"
 }
 

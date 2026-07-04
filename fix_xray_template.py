@@ -48,6 +48,9 @@ template = {
                 "domainStrategy": "UseIPv4",
                 "redirect": "",
                 "noises": []
+            },
+            "streamSettings": {
+                "sockopt": {"mark": 255}
             }
         },
         {

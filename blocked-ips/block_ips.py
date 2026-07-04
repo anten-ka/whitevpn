@@ -1,12 +1,13 @@
 import subprocess
 import requests
+import fcntl
 import time
 import os
 import shutil
 import ipaddress
 from datetime import datetime
 
-VERSION = "0.8"
+VERSION = "0.9"
 
 # Определение директорий
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -274,7 +275,14 @@ def fetch_and_block_ips():
     return elapsed_time
 
 
+LOCK_FILE = "/tmp/whitevpn-blockips.lock"
+
 if __name__ == "__main__":
+    _lock = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(_lock, fcntl.LOCK_EX)  # сериализуем: таймер vs бот vs manage
+    except Exception:
+        pass
     elapsed_time = fetch_and_block_ips()
     if elapsed_time is not None:
         print(f"Все IP заблокированы за {elapsed_time:.2f} секунд. Лог: {LOG_FILE}")

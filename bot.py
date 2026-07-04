@@ -18,7 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-VERSION = "0.8"
+VERSION = "0.9"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1489,8 +1489,7 @@ async def cb_docker_disable(cb: CallbackQuery):
     await cb.message.edit_text("⏳ Отключение Docker-защиты...")
     await cb.answer()
     try:
-        # Remove DNAT rules first so containers get normal DNS
-        await asyncio.to_thread(_remove_dns_dnat)
+        # docker_rules.sh disable убирает и DOCKER-USER, и DNAT :53
         await asyncio.to_thread(
             subprocess.run, ["bash", DOCKER_RULES, "disable"],
             capture_output=True, timeout=30
