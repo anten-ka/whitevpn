@@ -3,7 +3,9 @@
 
 Что делает:
   • DNS Xray -> 127.0.0.1 (Unbound) — блокировка доменов работает для VLESS-клиентов
-  • routing.domainStrategy = IPIfNonMatch — маршрутизация по резолву
+  • dns.queryStrategy = UseIPv4 + routing.domainStrategy = AsIs
+    (иначе xray шлёт AAAA-запросы и routing-резолвер IP-правил виснет
+     на 4с-таймаут → домены не резолвятся, whitelist не работает)
   • freedom.domainStrategy = UseIPv4 — исходящие только по IPv4
     (iptables-фильтр v4; без этого клиент мог бы уйти по IPv6 мимо блокировки)
 
@@ -28,17 +30,15 @@ template = {
         "maskAddress": ""
     },
     "routing": {
-        "domainStrategy": "IPIfNonMatch",
+        "domainStrategy": "AsIs",
         "rules": [
             {"type": "field", "inboundTag": ["api"], "outboundTag": "api"},
-            {"type": "field", "outboundTag": "blocked", "ip": ["geoip:private"]},
             {"type": "field", "outboundTag": "blocked", "protocol": ["bittorrent"]}
         ]
     },
     "dns": {
-        "servers": [
-            {"address": "127.0.0.1", "port": 53}
-        ]
+        "servers": ["127.0.0.1"],
+        "queryStrategy": "UseIPv4"
     },
     "outbounds": [
         {
