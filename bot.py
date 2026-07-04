@@ -18,7 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-VERSION = "0.7"
+VERSION = "0.8"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,8 @@ CONFIG_FILE = "/etc/block-ips/bot_config.json"
 SETTINGS_FILE = "/opt/block-traffic/bot_settings.json"
 SYSTEM_DIR = "/opt/block-traffic"
 DOCKER_RULES = os.path.join(SYSTEM_DIR, "docker_rules.sh")
+APPLY_FIREWALL = os.path.join(SYSTEM_DIR, "apply_firewall.sh")
+STATE_FILE = "/etc/block-ips/protection_state"
 VENV_PYTHON = os.path.join(SYSTEM_DIR, "venv", "bin", "python3")
 WHITELIST_DIR = os.path.join(SYSTEM_DIR, "whitelist")
 WHITELIST_CONF = os.path.join(WHITELIST_DIR, "whitelist.conf")
@@ -368,12 +370,28 @@ def update_whitelist_from_sources():
             extras = YOUTUBE_EXTRA_DOMAINS if cat == "youtube" else TELEGRAM_EXTRA_DOMAINS
             for d in extras:
                 domains.add(d.lower())
-            # Write file
+            # Write file — СОХРАНЯЯ IP/подсети из старого файла
             fp = os.path.join(WHITELIST_DIR, f"{cat}.txt")
+            ip_lines = []
+            if os.path.exists(fp):
+                with open(fp, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        try:
+                            ipaddress.ip_network(line, strict=False)
+                            ip_lines.append(line)
+                        except ValueError:
+                            pass
             with open(fp, "w", encoding="utf-8") as f:
                 f.write(f"# WhiteVPN {cat} whitelist (auto-updated {datetime.now():%Y-%m-%d %H:%M})\n")
                 for d in sorted(domains):
                     f.write(f"{d}\n")
+                if ip_lines:
+                    f.write("\n# === IP/подсети ===\n")
+                    for ip in ip_lines:
+                        f.write(f"{ip}\n")
             logger.info(f"Whitelist {cat}: {len(domains)} domains")
             updated = True
         except Exception as e:
@@ -677,9 +695,12 @@ async def monitor_block_log():
             )
             if r2.returncode == 0:
                 for line in r2.stdout.splitlines():
-                    if "deny" in line.lower() or "refused" in line.lower():
-                        dm = re.search(r'info: ([^\s]+)', line)
-                        domain = dm.group(1) if dm else "unknown"
+                    # log-local-actions: "info: local-zone <zone> <action> <qname> <qtype> <qclass>"
+                    dm = re.search(
+                        r'local-zone ([^\s]+)\.? (?:always_nxdomain|deny|refuse)(?: ([^\s]+)\.)?',
+                        line)
+                    if dm:
+                        domain = (dm.group(2) or dm.group(1)).rstrip(".")
                         entry = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLOCKED DNS: {domain}\n"
                         new_entries.append(entry)
             last_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1011,131 +1032,31 @@ async def cb_show_update_log(cb: CallbackQuery):
 
 
 def enable_protection():
-    subprocess.run(["systemctl", "start", "unbound"], capture_output=True, timeout=10)
-    with open("/etc/resolv.conf", "w") as f:
-        f.write("nameserver 127.0.0.1\n")
-    r_log = subprocess.run(
-        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
-         "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-        capture_output=True, timeout=10
-    )
-    if r_log.returncode != 0:
-        subprocess.run(
-            ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
-             "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-            capture_output=True, timeout=10
-        )
-    r_drop = subprocess.run(
-        ["iptables", "-C", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, timeout=10
-    )
-    if r_drop.returncode != 0:
-        subprocess.run(
-            ["iptables", "-A", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-            capture_output=True, timeout=10
-        )
-    if os.path.exists(DOCKER_RULES):
+    """Включить защиту: вся логика правил — в apply_firewall.sh (единая точка)."""
+    subprocess.run(["bash", APPLY_FIREWALL, "up"], capture_output=True, timeout=120)
+    # Если Docker есть, а контейнеры ещё не выбраны — автонастройка
+    if os.path.exists(DOCKER_RULES) and not os.path.exists("/etc/block-ips/docker_containers.conf"):
         try:
-            subprocess.run(["bash", DOCKER_RULES, "auto-setup-confirm"],
-                           capture_output=True, timeout=60)
-            subprocess.run(["bash", DOCKER_RULES, "enable"],
-                           capture_output=True, timeout=30)
+            r = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                subprocess.run(["bash", DOCKER_RULES, "auto-setup-confirm"],
+                               capture_output=True, timeout=180)
+                subprocess.run(["bash", APPLY_FIREWALL, "up"], capture_output=True, timeout=60)
         except Exception:
-            logger.warning("docker_rules.sh enable failed")
-    # Ensure DNS DNAT for Docker containers
-    _setup_dns_dnat()
-
-
-def _get_docker_subnets():
-    """Return list of (subnet, gateway) for all Docker networks."""
-    result = []
-    try:
-        r = subprocess.run(["docker", "network", "ls", "--format", "{{.Name}}"],
-                           capture_output=True, text=True, timeout=10)
-        for net_name in r.stdout.splitlines():
-            net_name = net_name.strip()
-            if not net_name or net_name in ("host", "none"):
-                continue
-            r2 = subprocess.run(
-                ["docker", "network", "inspect", "--format",
-                 "{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}", net_name],
-                capture_output=True, text=True, timeout=10
-            )
-            for part in r2.stdout.strip().split():
-                if "|" in part:
-                    subnet, gw = part.split("|", 1)
-                    if subnet and gw:
-                        result.append((subnet, gw))
-    except Exception:
-        logger.warning("Failed to get Docker subnets")
-    return result
-
-
-def _setup_dns_dnat():
-    """Add iptables DNAT rules to redirect Docker container DNS to Unbound."""
-    try:
-        for subnet, gw in _get_docker_subnets():
-            for proto in ["udp", "tcp"]:
-                chk = subprocess.run(
-                    ["iptables", "-t", "nat", "-C", "PREROUTING",
-                     "-s", subnet, "-p", proto, "--dport", "53",
-                     "!", "-d", "127.0.0.1",
-                     "-j", "DNAT", "--to-destination", f"{gw}:53"],
-                    capture_output=True, timeout=10
-                )
-                if chk.returncode != 0:
-                    subprocess.run(
-                        ["iptables", "-t", "nat", "-I", "PREROUTING",
-                         "-s", subnet, "-p", proto, "--dport", "53",
-                         "!", "-d", "127.0.0.1",
-                         "-j", "DNAT", "--to-destination", f"{gw}:53"],
-                        capture_output=True, timeout=10
-                    )
-    except Exception:
-        logger.warning("DNS DNAT setup failed")
-
-
-def _remove_dns_dnat():
-    """Remove all DNAT rules that redirect Docker container DNS to Unbound."""
-    try:
-        for subnet, gw in _get_docker_subnets():
-            for proto in ["udp", "tcp"]:
-                # Try removing up to 3 times in case of duplicates
-                for _ in range(3):
-                    r = subprocess.run(
-                        ["iptables", "-t", "nat", "-D", "PREROUTING",
-                         "-s", subnet, "-p", proto, "--dport", "53",
-                         "!", "-d", "127.0.0.1",
-                         "-j", "DNAT", "--to-destination", f"{gw}:53"],
-                        capture_output=True, timeout=10
-                    )
-                    if r.returncode != 0:
-                        break  # Rule doesn't exist, stop
-    except Exception:
-        logger.warning("DNS DNAT removal failed")
+            logger.warning("docker auto-setup failed")
 
 
 def disable_protection():
-    # Remove DNAT rules FIRST (before stopping Unbound, so containers don't lose DNS)
-    _remove_dns_dnat()
-    subprocess.run(
-        ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst",
-         "-j", "LOG", "--log-prefix", "WHITEVPN_BLOCK: ", "--log-level", "4"],
-        capture_output=True, timeout=10
-    )
-    subprocess.run(
-        ["iptables", "-D", "OUTPUT", "-m", "set", "--match-set", "blocked_ips", "dst", "-j", "DROP"],
-        capture_output=True, timeout=10
-    )
-    subprocess.run(["systemctl", "stop", "unbound"], capture_output=True, timeout=10)
-    with open("/etc/resolv.conf", "w") as f:
-        f.write("nameserver 8.8.8.8\n")
-    if os.path.exists(DOCKER_RULES):
-        try:
-            subprocess.run(["bash", DOCKER_RULES, "disable"],
-                           capture_output=True, timeout=30)
-        except Exception:
-            logger.warning("docker_rules.sh disable failed")
+    subprocess.run(["bash", APPLY_FIREWALL, "down"], capture_output=True, timeout=120)
+
+
+def protection_intended():
+    """Защита должна быть включена? (state-файл пишет apply_firewall.sh)"""
+    try:
+        with open(STATE_FILE) as f:
+            return "disabled" not in f.read()
+    except IOError:
+        return True
 
 
 # === UPDATE LISTS ===
@@ -1163,9 +1084,6 @@ async def do_update_lists(msg):
         )
         if r1.returncode != 0:
             errors.append(f"domains: {r1.stderr[:200]}")
-        await asyncio.to_thread(trim_blocked_domains)
-        subprocess.run(["systemctl", "restart", "unbound"],
-                        capture_output=True, timeout=30)
         r2 = await asyncio.to_thread(
             subprocess.run,
             [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
@@ -1199,9 +1117,6 @@ async def do_update_inline(cb):
         )
         if r1.returncode != 0:
             errors.append(f"domains: {r1.stderr[:200]}")
-        await asyncio.to_thread(trim_blocked_domains)
-        subprocess.run(["systemctl", "restart", "unbound"],
-                        capture_output=True, timeout=30)
         r2 = await asyncio.to_thread(
             subprocess.run,
             [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
@@ -1732,55 +1647,13 @@ async def handle_unknown(msg: types.Message):
 
 
 # === BACKGROUND TASKS ===
-AUTO_UPDATE_INTERVAL = 24 * 3600  # once per day
-
-
-async def auto_update_lists():
-    await asyncio.sleep(60)
-    while True:
-        try:
-            log_to_file("Auto-update lists...")
-            # Update whitelist sources
-            wl_ok = await asyncio.to_thread(update_whitelist_from_sources)
-            r1 = await asyncio.to_thread(
-                subprocess.run,
-                [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-domains", "block_domains.py")],
-                capture_output=True, text=True, timeout=120
-            )
-            await asyncio.to_thread(trim_blocked_domains)
-            subprocess.run(["systemctl", "restart", "unbound"],
-                            capture_output=True, timeout=30)
-            r2 = await asyncio.to_thread(
-                subprocess.run,
-                [VENV_PYTHON, os.path.join(SYSTEM_DIR, "blocked-ips", "block_ips.py")],
-                capture_output=True, text=True, timeout=120
-            )
-            ip_count = await asyncio.to_thread(get_ipset_count)
-            dom_count = await asyncio.to_thread(get_domains_count)
-            errors = []
-            if r1.returncode != 0:
-                errors.append(r1.stderr[:200])
-            if r2.returncode != 0:
-                errors.append(r2.stderr[:200])
-            log_update_history("auto", ip_count, dom_count, wl_ok)
-            if errors:
-                for aid in ADMIN_IDS:
-                    try:
-                        await bot.send_message(aid, f"⚠️ Автообновление с ошибками:\n{chr(10).join(errors)}")
-                    except Exception:
-                        pass
-            log_to_file(f"Auto-update done. IP:{ip_count} Dom:{dom_count} Errors: {errors}")
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            log_to_file(f"Auto-update error: {e}")
-        await asyncio.sleep(AUTO_UPDATE_INTERVAL)
-
-
 async def health_watchdog():
     await asyncio.sleep(300)
     while True:
         try:
+            if not protection_intended():
+                await asyncio.sleep(1800)
+                continue
             r = await asyncio.to_thread(
                 subprocess.run, ["systemctl", "is-active", "unbound"],
                 capture_output=True, text=True, timeout=5
@@ -1814,7 +1687,6 @@ async def main():
     logger.info(f"WhiteVPN Bot v{VERSION} starting...")
     log_to_file(f"Bot started (v{VERSION})")
     tasks = [
-        asyncio.create_task(auto_update_lists()),
         asyncio.create_task(health_watchdog()),
         asyncio.create_task(monitor_block_log()),
     ]

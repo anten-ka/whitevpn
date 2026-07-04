@@ -1,5 +1,5 @@
 #!/bin/bash
-VERSION="0.7"
+VERSION="0.8"
 
 if [ "$EUID" -ne 0 ]; then
   echo -e "\033[31m[!] Запустите скрипт от root: sudo blockme\033[0m"
@@ -285,10 +285,14 @@ uninstall() {
 
   [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" cleanup 2>/dev/null
 
+  [ -x "$SYSTEM_DIR/apply_firewall.sh" ] && bash "$SYSTEM_DIR/apply_firewall.sh" down 2>/dev/null
+  systemctl disable whitevpn-firewall 2>/dev/null
   rm -f /etc/systemd/system/block-ips-bot.service
   rm -f /etc/systemd/system/whitevpn-update.service
   rm -f /etc/systemd/system/whitevpn-update.timer
+  rm -f /etc/systemd/system/whitevpn-firewall.service
   rm -f /etc/systemd/system/ipset-restore.service
+  rm -f /etc/unbound/whitelist-zones.conf /etc/ipset.rules
   systemctl daemon-reload
 
   systemctl stop unbound 2>/dev/null; systemctl disable unbound 2>/dev/null
@@ -308,22 +312,11 @@ uninstall() {
 enable_blocking() {
   log "Включение защиты..."
 
-  echo 'nameserver 127.0.0.1' > /etc/resolv.conf
-  systemctl start unbound
-  success "Unbound запущен, DNS → 127.0.0.1"
-
-  # LOG-правило (перед DROP)
-  if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null; then
-    iptables -A OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4
-  fi
-  # DROP-правило
-  if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null; then
-    iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
-  fi
-  success "iptables (LOG + DROP)"
-
-  if [ -f "$DOCKER_RULES" ] && command -v docker &>/dev/null; then
-    bash "$DOCKER_RULES" enable 2>/dev/null && success "Docker-защита ВКЛ"
+  if [ -x "$SYSTEM_DIR/apply_firewall.sh" ]; then
+    bash "$SYSTEM_DIR/apply_firewall.sh" up
+  else
+    error "apply_firewall.sh не найден — переустановите WhiteVPN"
+    return 1
   fi
 
   load_whitelist_status
@@ -338,11 +331,16 @@ enable_blocking() {
 
 disable_blocking() {
   log "Отключение защиты..."
-  iptables -D OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null
-  iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
-  systemctl stop unbound 2>/dev/null
-  echo 'nameserver 8.8.8.8' > /etc/resolv.conf
-  [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" disable 2>/dev/null
+  if [ -x "$SYSTEM_DIR/apply_firewall.sh" ]; then
+    bash "$SYSTEM_DIR/apply_firewall.sh" down
+  else
+    iptables -D OUTPUT -m set --match-set whitevpn_allow dst -j ACCEPT 2>/dev/null
+    iptables -D OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null
+    iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
+    systemctl stop unbound 2>/dev/null
+    echo 'nameserver 8.8.8.8' > /etc/resolv.conf
+    [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" disable 2>/dev/null
+  fi
   success "Защита отключена."
 }
 
@@ -505,12 +503,7 @@ while true; do
     4)
       log "Перезапуск сервисов..."
       systemctl restart unbound 2>/dev/null
-      # Переприменяем iptables
-      iptables -D OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null
-      iptables -D OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null
-      iptables -A OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4
-      iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
-      [ -f "$DOCKER_RULES" ] && bash "$DOCKER_RULES" apply-ipt 2>/dev/null
+      [ -x "$SYSTEM_DIR/apply_firewall.sh" ] && bash "$SYSTEM_DIR/apply_firewall.sh" up
       success "Сервисы перезапущены."
       ;;
     5) whitelist_menu ;;

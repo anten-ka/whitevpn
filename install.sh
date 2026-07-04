@@ -1,12 +1,12 @@
 #!/bin/bash
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# WhiteVPN v0.5 — Установка компонента защиты
+# WhiteVPN v0.8 — Установка компонента защиты
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
-VERSION="0.5"
+VERSION="0.8"
 INSTALL_DIR="/opt/block-traffic"
 CONFIG_DIR="/etc/block-ips"
 BOT_CONFIG="${CONFIG_DIR}/bot_config.json"
@@ -44,7 +44,7 @@ clear
 cat << 'BANNER'
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  🛡  WhiteVPN v0.5 — Установка компонента защиты
+  🛡  WhiteVPN v0.8 — Установка компонента защиты
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   📋 О компоненте:
@@ -136,6 +136,8 @@ except: pass
     done
     rm -f /etc/systemd/system/whitevpn-*.service /etc/systemd/system/whitevpn-*.timer
     rm -f /etc/systemd/system/block-ips-bot.service
+    systemctl disable ipset-restore 2>/dev/null || true
+    rm -f /etc/systemd/system/ipset-restore.service
     systemctl daemon-reload 2>/dev/null || true
 
     # Удалить старую установку (конфиг сохраняем)
@@ -231,6 +233,8 @@ copy_or_download() {
 copy_or_download "bot.py" "$INSTALL_DIR/bot.py" "bot.py"
 copy_or_download "manage.sh" "$INSTALL_DIR/manage.sh" "manage.sh"
 copy_or_download "docker_rules.sh" "$INSTALL_DIR/docker_rules.sh" "docker_rules.sh"
+copy_or_download "apply_firewall.sh" "$INSTALL_DIR/apply_firewall.sh" "apply_firewall.sh"
+copy_or_download "fix_xray_template.py" "$INSTALL_DIR/fix_xray_template.py" "fix_xray_template.py"
 copy_or_download "VERSION" "$INSTALL_DIR/VERSION" "VERSION"
 
 # Скрипты блокировки
@@ -242,7 +246,7 @@ for f in telegram.txt youtube.txt custom.txt whitelist.conf; do
     copy_or_download "whitelist/$f" "$INSTALL_DIR/whitelist/$f" "whitelist/$f"
 done
 
-chmod +x "$INSTALL_DIR/manage.sh" "$INSTALL_DIR/docker_rules.sh"
+chmod +x "$INSTALL_DIR/manage.sh" "$INSTALL_DIR/docker_rules.sh" "$INSTALL_DIR/apply_firewall.sh"
 dos2unix "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/*.py 2>/dev/null || true
 dos2unix "$INSTALL_DIR"/blocked-*/*.py 2>/dev/null || true
 
@@ -273,6 +277,8 @@ systemctl disable systemd-resolved 2>/dev/null || true
 cat > /etc/unbound/unbound.conf << 'UNBCONF'
 server:
     verbosity: 1
+    log-local-actions: yes
+    use-syslog: yes
     port: 53
     do-ip4: yes
     do-ip6: no
@@ -284,6 +290,7 @@ server:
     num-threads: 2
     msg-cache-size: 4m
     rrset-cache-size: 8m
+    include: "/etc/unbound/whitelist-zones.conf"
     include: "/etc/unbound/blocked-domains.conf"
 
 forward-zone:
@@ -294,6 +301,7 @@ forward-zone:
 UNBCONF
 
 touch /etc/unbound/blocked-domains.conf
+touch /etc/unbound/whitelist-zones.conf
 chown -R unbound:unbound /etc/unbound 2>/dev/null || true
 
 echo "nameserver 127.0.0.1" > /etc/resolv.conf
@@ -308,46 +316,22 @@ ok "Unbound DNS настроен"
 
 log "Настройка ipset и iptables..."
 
-ipset create blocked_ips hash:net maxelem 2097152 2>/dev/null || ipset flush blocked_ips 2>/dev/null || true
+# Единая точка применения правил: apply_firewall.sh
+# (создаёт ipset'ы blocked_ips + whitevpn_allow, правила ACCEPT/LOG/DROP, DNS)
+bash "$INSTALL_DIR/apply_firewall.sh" up >> "$LOG" 2>&1 \
+    && ok "Правила защиты применены" \
+    || warn "apply_firewall.sh up завершился с предупреждениями (см. лог)"
 
-# Проверяем и добавляем LOG-правило
-if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4 2>/dev/null; then
-    iptables -A OUTPUT -m set --match-set blocked_ips dst -j LOG --log-prefix "WHITEVPN_BLOCK: " --log-level 4
-fi
-
-# Проверяем и добавляем DROP-правило
-if ! iptables -C OUTPUT -m set --match-set blocked_ips dst -j DROP 2>/dev/null; then
-    iptables -A OUTPUT -m set --match-set blocked_ips dst -j DROP
-fi
-
-# Docker защита
+# Docker-защита: автонастройка выбранных VPN-контейнеров
 if [[ $DOCKER_FOUND -eq 1 ]] && [[ -f "$INSTALL_DIR/docker_rules.sh" ]]; then
-    bash "$INSTALL_DIR/docker_rules.sh" enable >> "$LOG" 2>&1 || true
-    ok "Docker-защита включена"
+    warn "Сейчас будет настроена Docker-защита (контейнеры будут перезапущены)"
+    bash "$INSTALL_DIR/docker_rules.sh" auto-setup-confirm >> "$LOG" 2>&1 \
+        && ok "Docker-защита включена" \
+        || warn "Docker-защита не настроена полностью (см. лог)"
 fi
 
-# Сохраняем правила
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-
-# ipset persist
-cat > /etc/systemd/system/ipset-restore.service << 'IPSETSERVICE'
-[Unit]
-Description=Restore ipset rules
-Before=iptables-restore.service
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/ipset restore -f /etc/ipset.rules
-ExecStop=/sbin/ipset save -f /etc/ipset.rules
-
-[Install]
-WantedBy=multi-user.target
-IPSETSERVICE
-
-ipset save > /etc/ipset.rules 2>/dev/null || true
-systemctl daemon-reload
-systemctl enable ipset-restore 2>/dev/null || true
+# Сохранение ipset для восстановления после перезагрузки
+bash "$INSTALL_DIR/apply_firewall.sh" save >> "$LOG" 2>&1 || true
 
 ok "ipset + iptables настроены"
 
@@ -612,7 +596,25 @@ Persistent=true
 WantedBy=timers.target
 UPDTMR
 
+# Сервис восстановления защиты после перезагрузки
+cat > /etc/systemd/system/whitevpn-firewall.service << FWSVC
+[Unit]
+Description=WhiteVPN Firewall Restore v${VERSION}
+After=network-online.target unbound.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${INSTALL_DIR}/apply_firewall.sh boot
+
+[Install]
+WantedBy=multi-user.target
+FWSVC
+
 systemctl daemon-reload
+systemctl enable whitevpn-firewall.service >> "$LOG" 2>&1
+ok "Сервис восстановления защиты (whitevpn-firewall) включён"
 
 # Запускаем бот (если настроен)
 if [[ "$SETUP_BOT" == true ]] && [[ -n "$BOT_TOKEN_VAL" ]]; then
@@ -647,6 +649,25 @@ log "Первичное обновление списков блокировки
 ok "Списки обновлены"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 12b. Настройка Xray (3x-ui): DNS через Unbound + IPv4
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [[ $XUI_FOUND -eq 1 ]] && [[ -f /etc/x-ui/x-ui.db ]]; then
+    echo ""
+    info "Панель 3x-ui: без настройки Xray блокировка ДОМЕНОВ для VLESS-клиентов работать не будет."
+    info "Скрипт направит DNS Xray на Unbound и включит принудительный IPv4."
+    info "(старый шаблон сохраняется в /etc/block-ips/xray_template_backup.json)"
+    read -rp "  Настроить Xray сейчас (рекомендуется)? (y/n): "
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        python3 "$INSTALL_DIR/fix_xray_template.py" >> "$LOG" 2>&1 \
+            && ok "Шаблон Xray обновлён (DNS -> Unbound, UseIPv4)" \
+            || warn "Не удалось обновить шаблон Xray (см. лог)"
+    else
+        warn "Пропущено. Позже: python3 $INSTALL_DIR/fix_xray_template.py"
+    fi
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 13. Права доступа
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -675,6 +696,7 @@ cat << SUMMARY
   📋 Сервисы:
   • block-ips-bot.service    — Telegram бот
   • whitevpn-update.timer    — обновление раз в сутки
+  • whitevpn-firewall        — восстановление защиты после перезагрузки
 
   🔗 Партнёрские хостинги:
   • Хостинг #1: vk.cc/ct29NQ

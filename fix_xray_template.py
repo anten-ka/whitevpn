@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
-"""Patch x-ui database to set xray template with DNS->Unbound and UseIPv4."""
-import json, sqlite3, subprocess, time
+"""WhiteVPN: настройка шаблона Xray в БД 3x-ui.
+
+Что делает:
+  • DNS Xray -> 127.0.0.1 (Unbound) — блокировка доменов работает для VLESS-клиентов
+  • routing.domainStrategy = IPIfNonMatch — маршрутизация по резолву
+  • freedom.domainStrategy = UseIPv4 — исходящие только по IPv4
+    (iptables-фильтр v4; без этого клиент мог бы уйти по IPv6 мимо блокировки)
+
+Старый шаблон сохраняется в /etc/block-ips/xray_template_backup.json
+"""
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+
+DB_PATH = "/etc/x-ui/x-ui.db"
+BACKUP_PATH = "/etc/block-ips/xray_template_backup.json"
 
 template = {
     "log": {
@@ -61,27 +78,57 @@ template = {
     "metrics": {"tag": "metrics_out", "listen": "127.0.0.1:11111"}
 }
 
-tpl_json = json.dumps(template)
 
-db = sqlite3.connect("/etc/x-ui/x-ui.db")
-cur = db.cursor()
-cur.execute("SELECT COUNT(*) FROM settings WHERE key='xrayTemplateConfig'")
-if cur.fetchone()[0] > 0:
-    cur.execute("UPDATE settings SET value=? WHERE key='xrayTemplateConfig'", (tpl_json,))
-    print("Updated existing template")
-else:
-    cur.execute("INSERT INTO settings (key, value) VALUES ('xrayTemplateConfig', ?)", (tpl_json,))
-    print("Inserted new template")
-db.commit()
-db.close()
+def main():
+    if not os.path.exists(DB_PATH):
+        print(f"БД 3x-ui не найдена: {DB_PATH}")
+        sys.exit(1)
 
-print("Restarting x-ui...")
-subprocess.run(["systemctl", "restart", "x-ui"], timeout=10)
-time.sleep(4)
+    tpl_json = json.dumps(template)
 
-c = json.load(open("/usr/local/x-ui/bin/config.json"))
-print(f"dns: {c.get('dns')}")
-freedom_ds = [o["settings"].get("domainStrategy") for o in c["outbounds"] if o.get("protocol") == "freedom"]
-print(f"freedom domainStrategy: {freedom_ds}")
-print(f"routing domainStrategy: {c.get('routing', {}).get('domainStrategy')}")
-print("Done!")
+    db = sqlite3.connect(DB_PATH)
+    cur = db.cursor()
+    cur.execute("SELECT value FROM settings WHERE key='xrayTemplateConfig'")
+    row = cur.fetchone()
+
+    # Бэкап старого шаблона
+    if row and row[0]:
+        try:
+            os.makedirs(os.path.dirname(BACKUP_PATH), exist_ok=True)
+            if not os.path.exists(BACKUP_PATH):  # не затираем самый первый бэкап
+                with open(BACKUP_PATH, "w") as f:
+                    f.write(row[0])
+                print(f"Старый шаблон сохранён: {BACKUP_PATH}")
+        except IOError as e:
+            print(f"Не удалось сохранить бэкап: {e}")
+
+    if row is not None:
+        cur.execute("UPDATE settings SET value=? WHERE key='xrayTemplateConfig'", (tpl_json,))
+        print("Шаблон Xray обновлён")
+    else:
+        cur.execute("INSERT INTO settings (key, value) VALUES ('xrayTemplateConfig', ?)", (tpl_json,))
+        print("Шаблон Xray создан")
+    db.commit()
+    db.close()
+
+    print("Перезапуск x-ui...")
+    subprocess.run(["systemctl", "restart", "x-ui"], timeout=30)
+    time.sleep(4)
+
+    # Проверка применённого конфига
+    cfg_path = "/usr/local/x-ui/bin/config.json"
+    if os.path.exists(cfg_path):
+        try:
+            c = json.load(open(cfg_path))
+            print(f"dns: {c.get('dns')}")
+            freedom_ds = [o["settings"].get("domainStrategy")
+                          for o in c.get("outbounds", []) if o.get("protocol") == "freedom"]
+            print(f"freedom domainStrategy: {freedom_ds}")
+            print(f"routing domainStrategy: {c.get('routing', {}).get('domainStrategy')}")
+        except Exception as e:
+            print(f"Не удалось проверить config.json: {e}")
+    print("Готово!")
+
+
+if __name__ == "__main__":
+    main()
