@@ -43,6 +43,16 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
+# IP-диапазоны инфраструктуры WhiteVPN (GitHub) — всегда в allow, никогда не блокируются.
+# Иначе OUTPUT DROP режет api.github.com (авто-обновление доменов сломается).
+SYSTEM_ALLOW_NETS = [
+    "140.82.112.0/20",   # github.com, api.github.com
+    "143.55.64.0/20",    # github
+    "185.199.108.0/22",  # *.githubusercontent.com
+    "192.30.252.0/22",   # github
+]
+
+
 def load_whitelist_config():
     """Загрузить конфигурацию белого списка."""
     config = {"telegram": True, "youtube": True, "custom": True}
@@ -100,7 +110,12 @@ def load_whitelist_networks():
         except Exception as e:
             log_to_file(f"Ошибка чтения {cat_file}: {e}")
 
-    log_to_file(f"Загружено {len(whitelist_nets)} IPv4-подсетей в белый список")
+    for net_str in SYSTEM_ALLOW_NETS:
+        try:
+            whitelist_nets.append(ipaddress.ip_network(net_str, strict=False))
+        except ValueError:
+            pass
+    log_to_file(f"Загружено {len(whitelist_nets)} IPv4-подсетей в белый список (вкл. инфраструктуру)")
     return whitelist_nets
 
 

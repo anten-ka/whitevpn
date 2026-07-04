@@ -33,6 +33,16 @@ def log_to_file(message):
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
 
 
+# Инфраструктура самого WhiteVPN — НИКОГДА не блокируется. Иначе авто-обновление
+# ломает себя: api.github.com присутствует в refilter-блоклисте.
+SYSTEM_WHITELIST_DOMAINS = {
+    "github.com", "api.github.com", "codeload.github.com",
+    "raw.githubusercontent.com", "objects.githubusercontent.com",
+    "githubusercontent.com",
+    "antifilter.network", "antifilter.download",
+}
+
+
 def load_whitelist_config():
     """Загрузить конфигурацию белого списка."""
     config = {"telegram": True, "youtube": True, "custom": True}
@@ -138,7 +148,17 @@ def get_latest_release_url():
         log_to_file(f"Asset не найден, fallback: {fallback_url}")
         return fallback_url
     except Exception as e:
-        log_to_file(f"Ошибка получения релиза: {e}")
+        log_to_file(f"Ошибка получения релиза через API: {e}")
+        # Fallback: raw-эндпоинт GitHub (не требует api.github.com, который может быть заблокирован)
+        for branch in ("main", "master"):
+            raw_url = f"https://raw.githubusercontent.com/1andrevich/Re-filter-lists/{branch}/ruleset-domain-refilter_domains.json"
+            try:
+                r = requests.head(raw_url, timeout=10, allow_redirects=True)
+                if r.status_code == 200:
+                    log_to_file(f"Fallback URL доступен: {raw_url}")
+                    return raw_url
+            except Exception:
+                pass
         return None
 
 
@@ -217,6 +237,7 @@ def fetch_and_block_domains():
 
     config = load_whitelist_config()
     whitelist = load_whitelist_domains(config)
+    whitelist |= SYSTEM_WHITELIST_DOMAINS  # инфраструктура WhiteVPN — всегда исключена
     force_block = load_force_block_domains(config)
 
     try:
